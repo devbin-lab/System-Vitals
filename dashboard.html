@@ -1,0 +1,2055 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<script>
+// 저장된 테마를 첫 페인트 전에 적용 (깜빡임 방지). 'system'이면 속성 없이 OS 설정을 따름.
+try{
+  var t=localStorage.getItem('pcpanel.theme');
+  if(t==='light'||t==='dark') document.documentElement.setAttribute('data-theme', t);
+}catch(e){}
+</script>
+<title>System Vitals</title>
+<style>
+  /* ============================================================
+     SYSTEM VITALS — instrument-cluster HUD
+     Light / Dark / System theming. Tokens: cool graphite↔paper ground,
+     azure accent for structure, validated status ramp
+     (good/warning/serious/critical) for severity — tuned per-theme
+     for legibility against that theme's ground.
+     ============================================================ */
+  :root{
+    /* ---- light (default) ---- */
+    --plane:#eef1f5;
+    --surface:#ffffff;
+    --surface-2:#f1f4f8;
+    --line:rgba(20,30,48,.09);
+    --line-2:rgba(20,30,48,.16);
+    --ink:#12161d;
+    --ink-2:#4c5665;
+    --ink-3:#5b6675;
+    --accent:#2a6fd6;
+    --accent-soft:rgba(42,111,214,.12);
+    --accent2:#7c5cd6;
+    --on-accent:#fff;      /* accent 채움 버튼 위 텍스트 (라이트: 흰색 4.84:1) */
+    --good:#098034;
+    --warn:#9c6708;
+    --serious:#b94f2c;
+    --crit:#d1342f;
+    --track:rgba(20,30,48,.08);
+    --mono:"Cascadia Mono","Cascadia Code",ui-monospace,"SF Mono","Consolas",Menlo,monospace;
+    --sans:system-ui,"Segoe UI Variable Text","Segoe UI",sans-serif;
+    --r:14px;
+    --gap:clamp(8px,1vw,14px);
+    --ui-scale:1;   /* UI 배율 — 설정 탭에서 조절. 테마와 무관하므로 여기 한 곳에서만 정의 */
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --plane:#0a0b0e; --surface:#13161c; --surface-2:#181c23;
+      --line:rgba(255,255,255,.065); --line-2:rgba(255,255,255,.11);
+      --ink:#eef2f7; --ink-2:#a3adbb; --ink-3:#818d9b;
+      --accent:#49a6ff; --accent-soft:rgba(73,166,255,.16); --accent2:#b28dff;
+      --on-accent:#04121f;   /* 다크: 밝은 accent 채움 버튼 위 텍스트(7.3:1) */
+      --good:#18b24a; --warn:#f0b429; --serious:#ec835a; --crit:#ff4d4d;
+      --track:rgba(255,255,255,.07);
+      color-scheme:dark;
+    }
+  }
+  /* explicit override always wins over OS preference, in both directions */
+  :root[data-theme="dark"]{
+    --plane:#0a0b0e; --surface:#13161c; --surface-2:#181c23;
+    --line:rgba(255,255,255,.065); --line-2:rgba(255,255,255,.11);
+    --ink:#eef2f7; --ink-2:#a3adbb; --ink-3:#818d9b;
+    --accent:#49a6ff; --accent-soft:rgba(73,166,255,.16); --accent2:#b28dff;
+    --on-accent:#04121f;
+    --good:#18b24a; --warn:#f0b429; --serious:#ec835a; --crit:#ff4d4d;
+    --track:rgba(255,255,255,.07);
+    color-scheme:dark;
+  }
+  :root[data-theme="light"]{
+    --plane:#eef1f5; --surface:#ffffff; --surface-2:#f1f4f8;
+    --line:rgba(20,30,48,.09); --line-2:rgba(20,30,48,.16);
+    --ink:#12161d; --ink-2:#4c5665; --ink-3:#5b6675;
+    --accent:#2a6fd6; --accent-soft:rgba(42,111,214,.12); --accent2:#7c5cd6;
+    --on-accent:#fff;   /* 다크 OS에서 라이트 강제 시 @media dark 값이 새지 않게 명시 */
+    --good:#098034; --warn:#9c6708; --serious:#b94f2c; --crit:#d1342f;
+    --track:rgba(20,30,48,.08);
+    color-scheme:light;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  [hidden]{display:none !important}   /* hidden 속성이 클래스의 display(flex/grid)를 확실히 이기게 — 오버레이/배너 닫힘 보장 */
+  /* 테마 전환 순간엔 모든 트랜지션을 끈다(applyTheme 이 1프레임 동안 부여) — var() 색 고착 버그 방지 */
+  .theme-switching *{transition:none !important}
+  html,body{height:100%}
+  body{
+    background:var(--plane);   /* flat — a full-bleed gradient bands visibly on real monitors */
+    color:var(--ink);
+    transition:background-color .2s,color .2s;
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow:hidden;
+    user-select:none;
+    -webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;
+    overscroll-behavior:none;
+    touch-action:manipulation;
+  }
+  .app{
+    /* UI 배율(--ui-scale)은 zoom 이 아니라 transform:scale 로 적용한다. zoom 은 dvh/vh 가
+       기준으로 삼는 '유효 뷰포트'까지 같이 줄여버려서, 이미 여백 없이 딱 맞춘 이 레이아웃에서
+       배율을 올릴수록 하단이 화면 밖으로 잘려나간다(overflow:hidden 이라 스크롤도 안 됨).
+       대신 .app 자체를 1/scale 만큼 작게 선언해 그 안에서 완전히 맞춰 배치한 다음, 전체를
+       scale 만큼 다시 키워 화면에 꽉 채운다 — 내부 배치 비율은 그대로 유지되므로 어떤 배율에서도
+       잘리지 않는다(칸이 좁아지면 각 패널의 overflow-y:auto 가 대신 흡수). */
+    width:calc(100vw / var(--ui-scale));
+    height:calc(100dvh / var(--ui-scale));
+    transform:scale(var(--ui-scale));
+    transform-origin:top left;
+    display:flex;
+    flex-direction:column;
+    gap:var(--gap);
+    padding:clamp(10px,1.4vw,20px);
+  }
+
+  /* ---------- header ---------- */
+  .top{
+    display:flex;align-items:center;gap:clamp(10px,2vw,26px);
+    flex:0 0 auto;
+  }
+  .brand{display:flex;align-items:center;gap:12px;min-width:0}
+  .logo{
+    width:38px;height:38px;border-radius:10px;flex:0 0 auto;
+    background:var(--surface-2);
+    border:1px solid var(--line-2);
+    color:var(--accent);
+    display:grid;place-items:center;position:relative;overflow:hidden;
+  }
+  .logo svg{width:20px;height:20px}
+  .brand h1{font-size:clamp(13px,1.35vw,17px);font-weight:650;letter-spacing:.14em;white-space:nowrap}
+  .brand .sub{font-size:10.5px;color:var(--ink-3);letter-spacing:.22em;text-transform:uppercase;margin-top:1px}
+  .top .spacer{flex:1 1 auto}
+  .clock{
+    font-family:var(--mono);text-align:right;line-height:1;
+  }
+  .clock .t{font-size:clamp(22px,3vw,38px);font-weight:600;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+  .clock .d{font-size:11px;color:var(--ink-3);letter-spacing:.16em;margin-top:5px;text-transform:uppercase}
+  .status{
+    display:flex;align-items:center;gap:9px;
+    padding:9px 15px;border-radius:999px;
+    background:var(--surface);border:1px solid var(--line);
+    font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;
+    white-space:nowrap;
+  }
+  /* 상태 점: 예전엔 pulse 링 무한 애니메이션이었으나, 소프트웨어 렌더링(HW 가속 off)에선
+     무한 애니메이션 하나가 60fps로 계속 리페인트되며 CPU를 상시 점유한다 → 정적 색 점만 유지. */
+  .status .dot{width:9px;height:9px;border-radius:50%;color:var(--good);background:currentColor}
+
+  /* ---------- summary strip ---------- */
+  .kpis{
+    flex:0 0 auto;
+    display:grid;gap:var(--gap);
+    grid-template-columns:1.5fr 1fr 1fr 1fr;
+  }
+  .card{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:var(--r);
+    padding:clamp(12px,1.3vw,18px);
+    position:relative;overflow:hidden;
+    min-width:0;
+  }
+  .lab{font-size:10.5px;letter-spacing:.19em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+
+  /* hero power tile */
+  .hero{display:flex;flex-direction:column;justify-content:space-between}
+  .hero .top-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .hero .val{font-family:var(--mono);font-weight:650;line-height:.9;letter-spacing:-.01em;
+    font-size:clamp(34px,5.4vw,62px);display:flex;align-items:baseline;gap:8px;margin-top:6px}
+  .hero .val .u{font-size:.34em;color:var(--ink-2);font-weight:600;letter-spacing:.04em}
+  .hero .est{font-size:10px;color:var(--ink-3);letter-spacing:.05em}
+  .spark{width:100%;display:block}
+  .hero .spark{margin-top:8px;height:clamp(34px,5vh,52px)}
+  .breakdown{display:flex;gap:16px;margin-top:9px;flex-wrap:wrap}
+  .breakdown span{font-size:11px;color:var(--ink-2);font-family:var(--mono)}
+  .breakdown b{color:var(--ink);font-weight:600}
+  .breakdown i{font-style:normal;color:var(--ink-3)}
+
+  /* gauge kpi */
+  .gk{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;text-align:center}
+  .gauge{position:relative;width:100%;max-width:150px;aspect-ratio:1/1;margin:2px auto 0}
+  .gauge svg{width:100%;height:100%;transform:rotate(0deg)}
+  .gauge .track{fill:none;stroke:var(--track);stroke-width:8;stroke-linecap:round}
+  .gauge .fill{fill:none;stroke-width:8;stroke-linecap:round;stroke-dasharray:100;transition:stroke .5s,stroke-dashoffset .35s ease}
+  .gauge .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
+  .gauge .num{font-family:var(--mono);font-weight:650;font-size:clamp(20px,2.9vw,34px);line-height:1;font-variant-numeric:tabular-nums}
+  .gauge .num .deg{font-size:.5em;color:var(--ink-2);font-weight:500}
+  .gauge .cap{font-size:10px;color:var(--ink-3);letter-spacing:.12em;text-transform:uppercase}
+  .gk .name{font-size:11px;color:var(--ink-2);letter-spacing:.03em;margin-top:2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+
+  /* ---------- main grid ---------- */
+  .grid{
+    flex:1 1 auto;min-height:0;
+    display:grid;gap:var(--gap);
+    grid-template-columns:repeat(12,1fr);
+    grid-auto-rows:minmax(0,1fr);
+  }
+  .cpu{grid-column:span 5}
+  .gpu{grid-column:span 7}
+  .mem{grid-column:span 3}
+  .sto{grid-column:span 5}
+  .fan{grid-column:span 4}
+  .net{grid-column:span 12}
+  .panel{display:flex;flex-direction:column;min-height:0}
+  .phead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;flex:0 0 auto}
+  .phead .pt{display:flex;align-items:center;gap:9px;min-width:0}
+  .phead .pt .ic{width:15px;height:15px;color:var(--accent);flex:0 0 auto}
+  .phead .pt h2{font-size:12.5px;font-weight:650;letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .phead .pt .dev{font-size:10px;color:var(--ink-3);letter-spacing:.04em;white-space:nowrap}
+  .pbody{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+  .pbody::-webkit-scrollbar{width:5px}
+  .pbody::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:3px}
+
+  /* metric readout row */
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(74px,1fr));gap:9px}
+  .metric{background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+  .metric .mv{font-family:var(--mono);font-weight:600;font-size:clamp(15px,1.7vw,20px);line-height:1;font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:3px}
+  .metric .mv .mu{font-size:.55em;color:var(--ink-3);font-weight:500}
+  .metric .ml{font-size:9.5px;color:var(--ink-3);letter-spacing:.11em;text-transform:uppercase;margin-top:6px}
+
+  /* horizontal bar */
+  .bar{height:7px;border-radius:6px;background:var(--track);overflow:hidden;position:relative}
+  .bar>i{display:block;height:100%;border-radius:6px;width:0;transition:width .35s ease,background .5s}
+  .rowbar{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px}
+  .rowbar .k{font-size:11px;color:var(--ink-2)}
+  .rowbar .v{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink);min-width:0;text-align:right}
+
+  /* cpu cores */
+  .cores{display:grid;grid-template-columns:repeat(auto-fill,minmax(138px,1fr));gap:6px 12px;flex:1 1 auto;align-content:start}
+  .core{display:grid;grid-template-columns:22px 1fr 46px;align-items:center;gap:7px}
+  .core .cid{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .core .clk{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);text-align:right;font-variant-numeric:tabular-nums}
+  .core .clk b{color:var(--ink);font-weight:600}
+
+  /* storage / fan lists */
+  .list{display:flex;flex-direction:column;gap:9px;flex:1 1 auto;justify-content:flex-start}
+  .drive .dtop{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}
+  .drive .dname{font-size:11.5px;color:var(--ink);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .drive .dmeta{font-family:var(--mono);font-size:11px;color:var(--ink-2);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .drive .dmeta .tmp{font-weight:600}
+
+  .fanrow{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px}
+  .fanrow .fn{font-size:11.5px;color:var(--ink-2)}
+  .fanrow .fx{display:flex;align-items:center;gap:9px}
+  .fanrow .rpm{font-family:var(--mono);font-size:13px;color:var(--ink);font-variant-numeric:tabular-nums;min-width:52px;text-align:right}
+  .fanrow .rpm .z{color:var(--ink-3)}
+  .fanrow .rpm small{font-size:.66em;color:var(--ink-3)}
+  .blade{width:16px;height:16px;color:var(--ink-3)}
+  /* 팬 날개: 여러 개가 무한 회전하면 소프트웨어 렌더링에서 리페인트 비용이 크다 → 회전은 빼고
+     '실행 중'은 밝은 색으로만 표시(정지 팬은 회색). CPU 상시 점유 제거. */
+  .blade.spin{color:var(--accent)}
+
+  /* network */
+  .net .pbody{flex-direction:row;gap:var(--gap)}
+  .netcol{flex:1;display:flex;flex-direction:column}
+  .netcol .nhead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:2px}
+  .netcol .dir{font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);display:flex;align-items:center;gap:6px}
+  .netcol .dir .ar{width:12px;height:12px}
+  .netcol .big{font-family:var(--mono);font-weight:600;font-size:clamp(18px,2.2vw,26px);font-variant-numeric:tabular-nums;line-height:1}
+  .netcol .big .u{font-size:.5em;color:var(--ink-3);font-weight:500;margin-left:3px}
+  .netcol .tot{font-size:10px;color:var(--ink-3);font-family:var(--mono);margin-top:3px}
+  .netcol .spark{height:clamp(30px,7vh,58px);margin-top:auto}
+  .netdiv{width:1px;background:var(--line);flex:0 0 auto}
+
+  /* small colored pill for status text */
+  .badge{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:6px;font-weight:600;white-space:nowrap}
+
+  /* sim ribbon */
+  /* 오른쪽 padding 으로 우하단 설정 기어(⚙, position:fixed) 자리를 비워 #poll 글귀와 겹치지 않게 한다. */
+  .foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;
+    font-size:10.5px;color:var(--ink-3);letter-spacing:.04em;padding:0 66px 0 3px}
+  .foot .live{display:flex;align-items:center;gap:7px;color:var(--ink-2)}
+  .foot .live .rec{width:8px;height:8px;border-radius:50%;background:var(--crit)}  /* 무한 깜빡임 제거(CPU 절약) */
+  .foot .legend{display:flex;gap:14px}
+  .foot .legend span{display:flex;align-items:center;gap:5px}
+  .foot .legend i{width:9px;height:9px;border-radius:3px;display:inline-block}
+
+  /* LHM onboarding banner */
+  .lhm{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:12px;
+    background:color-mix(in srgb,var(--accent) 9%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 32%,transparent)}
+  .lhm-ic{font-size:18px;line-height:1}
+  .lhm-msg{flex:1 1 auto;font-size:12.5px;color:var(--ink);min-width:0}
+  .lhm-msg b{color:var(--accent)}
+  .lhm-b{font-size:11.5px;font-weight:600;letter-spacing:.02em;padding:7px 12px;border-radius:8px;cursor:pointer;
+    border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink);text-decoration:none;white-space:nowrap}
+  .lhm-b:hover{border-color:var(--accent)}
+  .lhm-auto{background:var(--accent);color:#04121f;border-color:var(--accent)}
+  .lhm-x{background:transparent;border:none;color:var(--ink-3);font-size:14px;cursor:pointer;padding:4px 6px;line-height:1}
+  .lhm-x:hover{color:var(--ink)}
+  .lhm-steps{flex:0 0 auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 16px}
+  .lhm-steps ol{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+  .lhm-steps li{font-size:11.5px;color:var(--ink-2);line-height:1.55}
+  .lhm-steps b{color:var(--ink)}
+  @media (max-width:640px){ .lhm{flex-wrap:wrap} .lhm-msg{flex-basis:100%} }
+
+  /* ==================== 위젯 캔버스 (커스텀 레이아웃) ==================== */
+  /* #dash: 기존 검증된 대시보드 래퍼 — .app 안에서 헤더/푸터 사이를 채운다 */
+  #dash{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--gap)}
+
+  #canvas{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+  #widgets{
+    --wcols:12; --wcell:156px; --wgap:10px;
+    flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;  /* 그리드가 내용보다 작아 넘칠 때만 세로 스크롤 */
+    display:grid;
+    grid-template-columns:repeat(var(--wcols),var(--wcell));
+    grid-auto-rows:var(--wcell);
+    gap:var(--wgap);
+    align-content:start;justify-content:start;
+  }
+  /* 편집 모드: 셀 격자 가이드 */
+  #canvas.edit #widgets{
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: calc(var(--wcell) + var(--wgap)) calc(var(--wcell) + var(--wgap));
+    background-position:0 0;
+  }
+
+  .wdg{
+    grid-column: calc(var(--x) + 1) / span var(--w);
+    grid-row: calc(var(--y) + 1) / span var(--h);
+    position:relative;
+    container-type:size; container-name:wdg;
+    background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;
+    display:flex;flex-direction:column;
+    touch-action:none;  /* 편집 시 포인터 드래그가 스크롤로 새지 않도록 */
+  }
+  #canvas.edit .wdg{cursor:grab;border-color:var(--line-2)}
+  #canvas.edit .wdg:hover{border-color:var(--accent)}
+  #canvas.edit .wdg.drag{cursor:grabbing;opacity:.9;z-index:20;box-shadow:0 12px 34px rgba(0,0,0,.4)}
+  /* 삭제 버튼 · 크기조절 핸들 (편집 모드 전용) */
+  .wdg-del,.wdg-resize{position:absolute;z-index:5;display:none}
+  #canvas.edit .wdg-del{
+    display:grid;place-items:center;top:5px;right:5px;width:22px;height:22px;border-radius:7px;
+    background:color-mix(in srgb,var(--crit) 20%, var(--surface));border:1px solid var(--crit);
+    color:var(--crit);font-size:12px;line-height:1;cursor:pointer}
+  #canvas.edit .wdg-resize{
+    display:block;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;
+    background:
+      linear-gradient(135deg, transparent 50%, var(--accent) 50%);
+    border-bottom-right-radius:13px}
+  #canvas.edit .wdg-resize::after{content:"";position:absolute;right:3px;bottom:3px;width:6px;height:6px;
+    border-right:2px solid var(--surface);border-bottom:2px solid var(--surface)}
+  /* 편집 모드에선 삭제(X) 버튼이 우상단 22×22를 덮으므로, 그 아래 놓이는 배지·타이틀이
+     가려지지 않도록 모든 위젯 헤더 오른쪽에 여유 공간을 예약한다. */
+  #canvas.edit .wg-head, #canvas.edit .wgp-head{padding-right:26px}
+
+  /* ---- 위젯 내부 UI (컨테이너 쿼리로 크기 최적화) ---- */
+  .wg{width:100%;height:100%;display:flex;flex-direction:column;padding:8cqmin;gap:4cqmin;min-height:0}
+  .wg-head{display:flex;align-items:center;gap:5cqmin;flex:0 0 auto}
+  .wg-head .wg-ic{width:min(16px,11cqmin);height:min(16px,11cqmin);color:var(--accent);flex:0 0 auto}
+  .wg-head .wg-t{font-size:clamp(9px,7cqmin,13px);font-weight:600;letter-spacing:.06em;color:var(--ink-2);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* 게이지(원그래프) 위젯 */
+  .wg-gauge{position:relative;flex:1 1 auto;min-height:0;display:grid;place-items:center}
+  .wg-gauge svg{width:min(84cqw,84cqh);height:min(84cqw,84cqh);display:block}
+  .wg-gauge .track{fill:none;stroke:var(--track);stroke-width:8;stroke-linecap:round}
+  .wg-gauge .fill{fill:none;stroke-width:8;stroke-linecap:round;stroke-dasharray:100;
+    transition:stroke .5s, stroke-dashoffset .35s ease}
+  .wg-ctr{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
+  .wg-num{font-family:var(--mono);font-weight:650;line-height:1;font-variant-numeric:tabular-nums;
+    font-size:clamp(17px,26cqmin,52px)}
+  .wg-num .wg-u{font-size:.5em;color:var(--ink-2);font-weight:500}
+  .wg-cap{font-size:clamp(7px,5.5cqmin,12px);color:var(--ink-3);letter-spacing:.1em;text-transform:uppercase}
+  .wg-sub{flex:0 0 auto;text-align:center;font-size:clamp(8px,6cqmin,13px);color:var(--ink-3)}
+  .wg-sub b{font-family:var(--mono);color:var(--ink);font-weight:600}
+  .wg-g{padding:6cqmin}  /* 게이지 위젯은 헤더 없이 원그래프에 집중 */
+  /* 아주 낮은(1행) 게이지에서는 하단 부제만 숨겨 원그래프 공간 확보.
+     .wg-cap(‘CPU TEMP’·‘▼ 다운로드’ 등)은 위젯의 정체성이므로 절대 숨기지 않는다
+     — clamp(7px,5.5cqmin,12px) 로 작은 셀에서도 읽히게 축소만 함. */
+  @container wdg (max-height:180px){ .wg-sub{display:none} }
+
+  /* 스탯(숫자) 위젯 */
+  .wg-stat{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;gap:3cqmin}
+  .wg-big{font-family:var(--mono);font-weight:650;line-height:1;font-variant-numeric:tabular-nums;
+    font-size:clamp(20px,30cqmin,64px);color:var(--ink)}
+  .wg-big .wg-u{font-size:.42em;color:var(--ink-3);font-weight:500;margin-left:.15em}
+  .wg-stat .wg-cap{align-self:flex-start}
+  .wg-substat{font-size:clamp(8px,6cqmin,13px);color:var(--ink-3);display:flex;gap:8cqmin;flex-wrap:wrap}
+  .wg-substat b{font-family:var(--mono);color:var(--ink-2);font-weight:600}
+
+  /* 리스트형 복합 위젯 (코어/팬/스토리지) */
+  .wg-list{flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:max(3px,2cqmin)}
+  .wg-row{display:flex;align-items:center;gap:5cqmin;font-size:clamp(8px,5.5cqmin,12px);line-height:1.15}
+  .wg-row .wg-k{color:var(--ink-3);flex:0 0 auto;min-width:2.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wg-row .wg-bar{flex:1 1 auto;height:max(4px,3cqmin);border-radius:99px;background:var(--track);overflow:hidden}
+  .wg-row .wg-bar i{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .35s ease}
+  .wg-row .wg-vv{flex:0 0 auto;font-family:var(--mono);color:var(--ink-2);min-width:2.6em;text-align:right}
+  .wg-more{font-size:clamp(7px,5cqmin,11px);color:var(--ink-3);text-align:center;flex:0 0 auto}
+
+  /* 그래프(꺾은선) 위젯 */
+  .wg-graphtop{flex:0 0 auto;display:flex;align-items:baseline;gap:6cqmin;flex-wrap:wrap;line-height:1.1}
+  .wg-graphtop .wg-gval{font-family:var(--mono);font-weight:650;color:var(--ink);font-size:clamp(15px,17cqmin,34px)}
+  .wg-graphtop .wg-gu{font-family:var(--mono);color:var(--ink-3);font-size:clamp(9px,8cqmin,15px)}
+  .wg-graphtop .wg-gsub{margin-left:auto;color:var(--ink-3);font-size:clamp(8px,6cqmin,12px)}
+  .wg-graphtop .wg-gseg{font-size:clamp(9px,8cqmin,15px);font-weight:600}
+  .wg-graphtop .wg-gseg b{font-family:var(--mono);font-weight:650}
+  .wg-graphtop .wg-gseg+.wg-gseg{margin-left:auto}
+  .wg-spark{flex:1 1 auto;min-height:0;width:100%;display:block;margin-top:2cqmin}
+
+  /* ===== 네트워크 (다운/업 분리) 위젯: 크기별 변형 없이 항상 고정 레이아웃(클래식 대시보드 스타일) ===== */
+  .wg-netsplit-w{gap:clamp(6px,1.4cqmin,12px)}
+  .wg-netcols{flex:1 1 auto;min-height:0;display:flex;gap:clamp(12px,2.4cqmin,22px)}
+  .wg-netcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0}
+  .wg-netdiv{width:1px;background:var(--line);flex:0 0 auto}
+  .wg-nhead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex:0 0 auto}
+  .wg-dir{font-size:clamp(9.5px,1.7cqmin,12px);letter-spacing:.13em;text-transform:uppercase;font-weight:700;
+    display:flex;align-items:center;gap:5px;white-space:nowrap}
+  .wg-dir .wg-ar{width:12px;height:12px;flex:0 0 auto}
+  .wg-tot{font-size:clamp(8.5px,1.4cqmin,11px);color:var(--ink-3);font-family:var(--mono);white-space:nowrap}
+  .wg-nbig{flex:0 0 auto;font-family:var(--mono);font-weight:650;line-height:1;font-variant-numeric:tabular-nums;
+    font-size:clamp(18px,5.4cqmin,32px);color:var(--ink);margin-top:5px}
+  .wg-nbig .wg-u{font-size:.48em;color:var(--ink-3);font-weight:500;margin-left:.2em}
+  .wg-nspark{flex:1 1 auto;min-height:0;width:100%;display:block;margin-top:4px}
+
+  /* ===== CPU/GPU 종합 패널 위젯 (대시보드 패널과 동일한 레이아웃) ===== */
+  .wg-panel{padding:clamp(10px,1.8cqmin,15px);gap:clamp(9px,1.8cqmin,15px)}
+  .wgp-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:0}
+  .wgp-head .wg-ic{width:19px;height:19px;color:var(--accent);flex:0 0 auto}
+  .wgp-title{font-size:16px;font-weight:700;letter-spacing:.05em;color:var(--ink);flex:0 0 auto}
+  .wgp-dev{font-size:12.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+  .wgp-badge{font-size:12px;font-weight:600;padding:4px 11px;border-radius:999px;flex:0 0 auto;letter-spacing:.04em}
+  /* auto-fit: 항목 수(CPU 4개·GPU 5개 등)에 관계없이 실제 개수만큼 열을 잡아 폭 전체를 꽉 채운다.
+     고정 개수 breakpoint(2/3/4/6열)를 쓰면 항목 수가 열 수를 나누어떨어지지 않을 때 마지막 줄에
+     빈 칸(양옆 죽은공간)이 생겼음 — auto-fit + minmax(…,1fr)은 남는 트랙을 0으로 접고 있는
+     카드들이 1fr로 늘어나 채우므로 CPU/GPU 카드 크기가 항상 같은 규칙으로 통일된다. */
+  .wgp-metrics{flex:0 0 auto;display:grid;gap:clamp(10px,1.7cqmin,15px);
+    grid-template-columns:repeat(auto-fit,minmax(clamp(92px,15cqw,150px),1fr))}
+  .wgp-m{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);min-width:0;
+    padding:clamp(15px,3cqmin,24px) clamp(12px,2cqmin,18px)}
+  .wgp-mv{font-family:var(--mono);font-weight:650;line-height:1;font-variant-numeric:tabular-nums;color:var(--ink);
+    font-size:clamp(27px,9cqmin,44px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wgp-mv .wgp-mu{font-size:.5em;color:var(--ink-3);font-weight:500;margin-left:.18em}
+  .wgp-ml{font-size:clamp(13px,2.8cqmin,17px);color:var(--ink-3);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wgp-lower{flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:center}
+  .wgp-cores{display:grid;align-content:center;gap:clamp(7px,1.6cqmin,12px) clamp(12px,2.2cqmin,24px);
+    grid-template-columns:repeat(auto-fill,minmax(clamp(108px,16cqw,170px),1fr))}
+  .wgp-core{display:flex;align-items:center;gap:8px;font-size:clamp(12px,2.6cqmin,16px)}
+  .wgp-ck{color:var(--ink-3);flex:0 0 auto;min-width:1.9em;font-family:var(--mono)}
+  .wgp-cv{flex:0 0 auto;font-family:var(--mono);color:var(--ink-2);min-width:2.8em;text-align:right}
+  .wgp-bars{display:flex;flex-direction:column;justify-content:center;gap:clamp(10px,2.4cqmin,18px)}
+  .wgp-bar{display:flex;align-items:center;gap:10px;font-size:clamp(12px,2.6cqmin,16px)}
+  .wgp-bk{color:var(--ink-3);flex:0 0 auto;min-width:2.8em}
+  .wgp-bv{flex:0 0 auto;font-family:var(--mono);color:var(--ink-2);text-align:right;min-width:5.8em;white-space:nowrap}
+  .wg-panel .wg-bar{flex:1 1 auto;height:max(8px,1.5cqmin);border-radius:99px;background:var(--track);overflow:hidden}
+  .wg-panel .wg-bar i{display:block;height:100%;border-radius:99px;transition:width .35s ease}
+  @container wdg (max-height:150px){ .wgp-lower{display:none} }
+  @container wdg (max-width:235px){ .wgp-dev{display:none} }
+
+  /* ===== 스토리지 위젯 (드라이브별 이름·온도·사용률, 크게) ===== */
+  .wg-drives{flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:center;gap:clamp(12px,3cqmin,22px)}
+  .wg-dr{display:flex;flex-direction:column;gap:6px}
+  .wg-dr-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .wg-dr-name{font-size:clamp(13px,3.4cqmin,19px);font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wg-dr-meta{font-size:clamp(11.5px,2.6cqmin,15px);color:var(--ink-3);font-family:var(--mono);flex:0 0 auto;white-space:nowrap}
+  .wg-dr-meta b{font-weight:650}
+  .wg-drives .wg-bar{height:max(8px,1.8cqmin);border-radius:99px;background:var(--track);overflow:hidden}
+  .wg-drives .wg-bar i{display:block;height:100%;border-radius:99px;transition:width .35s ease}
+
+  /* ===== 팬 속도 위젯 (팬 이름 · RPM, 크게) ===== */
+  .wg-fans{flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:center;gap:clamp(12px,3cqmin,22px)}
+  .wg-fan{display:flex;align-items:center;gap:10px;font-size:clamp(13px,3cqmin,18px)}
+  .wg-fan-name{color:var(--ink-2);flex:0 0 auto;min-width:4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wg-fan .wg-bar{flex:1 1 auto;height:max(8px,1.8cqmin);border-radius:99px;background:var(--track);overflow:hidden}
+  .wg-fan .wg-bar i{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .35s ease}
+  .wg-fan-rpm{flex:0 0 auto;font-family:var(--mono);color:var(--ink);font-weight:650;min-width:4.2em;text-align:right}
+  .wg-fan-rpm small{color:var(--ink-3);font-weight:400;margin-left:3px;font-size:.78em}
+
+  /* 편집 툴바 — 하단 중앙 플로팅 커맨드 바 (불투명·그림자로 푸터 위에 깔끔히 얹힘) */
+  #editBar{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:55;
+    display:flex;align-items:center;gap:8px;padding:8px 8px 8px 16px;border-radius:16px;
+    background:var(--surface);border:1px solid var(--line-2);
+    box-shadow:0 20px 50px -16px rgba(0,0,0,.55),0 4px 14px -8px rgba(0,0,0,.4);
+    max-width:calc(100% - 28px);animation:editRise .2s cubic-bezier(.2,.8,.2,1)}
+  /* 전용 키프레임: translateX(-50%) 중앙정렬을 보존한다(공용 pnlRise 는 이 오프셋을 지워 열 때마다 우측으로 튐) */
+  @keyframes editRise{from{opacity:0;transform:translateX(-50%) translateY(10px) scale(.985)}to{opacity:1;transform:translateX(-50%)}}
+  #editBar .eb-title{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--ink);white-space:nowrap;
+    display:flex;align-items:center;gap:8px}
+  #editBar .eb-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);flex:0 0 auto}
+  #editBar .eb-hint{font-size:11px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #editBar .eb-spacer{flex:1 1 auto;min-width:4px}
+  .eb-b{padding:9px 14px;border-radius:10px;border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2);
+    font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:.15s}
+  .eb-b:hover{color:var(--ink);border-color:var(--accent);background:var(--accent-soft)}
+  .eb-b:active{transform:translateY(1px)}
+  .eb-b.eb-done{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+  .eb-b.eb-done:hover{background:var(--accent);color:var(--on-accent);box-shadow:0 4px 14px -4px color-mix(in srgb,var(--accent) 55%,transparent)}
+  .eb-gridctl{display:flex;align-items:center;gap:3px;padding:3px;border-radius:11px;background:var(--surface-2);border:1px solid var(--line)}
+  .eb-gridctl .eb-gl{font-size:11px;color:var(--ink-3);font-weight:600;padding:0 5px}
+  .eb-gridctl #ebGridVal{font-family:var(--mono);font-size:13px;color:var(--ink);min-width:1.7em;text-align:center;font-weight:650}
+  .eb-b.eb-step{padding:5px 10px;font-size:15px;line-height:1;background:transparent;border-color:transparent;color:var(--ink-2)}
+  .eb-b.eb-step:hover{background:var(--surface);border-color:var(--line-2);color:var(--accent)}
+  @media (max-width:900px){ #editBar .eb-hint{display:none} }
+
+  /* 위젯 팔레트 (카테고리별 정렬) */
+  .wp-grid{display:flex;flex-direction:column;gap:18px;max-height:calc(64vh / var(--ui-scale));overflow-y:auto;padding-right:4px;margin-right:-4px}
+  .wp-cat{display:flex;flex-direction:column;gap:10px}
+  .wp-cat-h{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:700;
+    display:flex;align-items:center;gap:10px}
+  .wp-cat-h::after{content:"";flex:1 1 auto;height:1px;background:var(--line)}   /* 라벨 뒤로 얇은 구분선 */
+  .wp-cat-items{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .wp-item{display:flex;flex-direction:column;align-items:center;gap:8px;padding:15px 8px;border-radius:13px;
+    border:1px solid var(--line);background:var(--surface-2);color:var(--ink-2);cursor:pointer;text-align:center;transition:.15s}
+  .wp-item:hover{border-color:var(--accent);color:var(--ink);background:var(--accent-soft);transform:translateY(-2px);
+    box-shadow:0 8px 18px -10px rgba(0,0,0,.4)}
+  .wp-item:active{transform:translateY(0)}
+  .wp-item svg{width:23px;height:23px;color:var(--accent)}
+  .wp-item .wp-n{font-size:11.5px;font-weight:600;line-height:1.3}
+  .wp-item .wp-sz{font-size:9.5px;color:var(--ink-3);letter-spacing:.06em;font-family:var(--mono)}
+  .wp-note{font-size:12px;color:var(--crit);background:color-mix(in srgb,var(--crit) 12%, transparent);
+    border:1px solid color-mix(in srgb,var(--crit) 45%, transparent);border-radius:10px;padding:10px 12px;line-height:1.5}
+  .wp-shake{animation:wpshake .42s}
+  @keyframes wpshake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-5px)}40%,80%{transform:translateX(5px)}}
+  @media (prefers-reduced-motion:reduce){.wp-shake{animation:none}}
+
+  /* ===================== 설정 패널 · 위젯 팔레트 (프리미엄/미니멀 리빌드) ===================== */
+  /* 플로팅 설정 기어 — 테마 인식(예전엔 하드코딩 다크라 라이트에서 어색), 은은한 그림자 + 호버 회전 */
+  .pnl-gear{position:fixed;right:16px;bottom:16px;width:42px;height:42px;border-radius:13px;z-index:50;
+    background:var(--surface);border:1px solid var(--line-2);color:var(--ink-2);font-size:19px;cursor:pointer;
+    display:grid;place-items:center;box-shadow:0 6px 20px -6px rgba(0,0,0,.4);transition:transform .18s,color .15s,border-color .15s}
+  .pnl-gear:hover{color:var(--accent);border-color:var(--accent);transform:rotate(35deg)}
+  .pnl-gear:active{transform:rotate(35deg) scale(.94)}
+
+  /* 오버레이 스크림 + 카드 (설정/팔레트 공용) */
+  .pnl-ovl{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:20px;
+    background:rgba(8,10,14,.58);animation:pnlFade .16s ease}
+  @keyframes pnlFade{from{opacity:0}to{opacity:1}}
+  @keyframes pnlRise{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+  /* max-height 는 --ui-scale 로 나눈다: 오버레이는 scale 된 .app 안에 있어 vh 가 실제 뷰포트 기준으로
+     계산되므로, 나눠주지 않으면 배율↑ 시 카드가 화면을 넘어 제목/힌트가 잘렸다(.app 도 100dvh 를 같은 방식으로 나눔). */
+  .pnl-card{width:min(408px,100%);max-height:calc(min(88vh,760px) / var(--ui-scale));overflow-y:auto;
+    background:var(--surface);border:1px solid var(--line-2);border-radius:20px;padding:22px 22px 20px;
+    display:flex;flex-direction:column;gap:20px;
+    box-shadow:0 1px 0 rgba(255,255,255,.05) inset,0 30px 80px -20px rgba(0,0,0,.55),0 8px 24px -12px rgba(0,0,0,.4);
+    animation:pnlRise .22s cubic-bezier(.2,.8,.2,1)}
+  @media (prefers-reduced-motion:reduce){.pnl-ovl,.pnl-card,#editBar{animation:none}}
+
+  .pnl-top{display:flex;justify-content:space-between;align-items:center}
+  .pnl-title{font-size:17px;font-weight:650;letter-spacing:.01em;color:var(--ink)}
+  .pnl-x{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;border:1px solid transparent;
+    background:transparent;color:var(--ink-3);font-size:14px;cursor:pointer;transition:.15s}
+  .pnl-x:hover{background:var(--surface-2);color:var(--ink);border-color:var(--line)}
+  .pnl-x:active{transform:scale(.94)}
+
+  /* 섹션 — 구분선 대신 여백으로 정돈(미니멀). 마이크로 라벨 + 컨트롤 */
+  .pnl-sec{display:flex;flex-direction:column;gap:11px}
+  .pnl-sec-h{font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+
+  /* 세그먼트 컨트롤(테마·레이아웃) — inset 트랙 + 선택 시 떠오르는 pill */
+  .pnl-seg{display:flex;gap:4px;padding:4px;border-radius:13px;background:var(--surface-2);border:1px solid var(--line)}
+  .pnl-seg button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+    padding:10px 6px;border-radius:9px;border:1px solid transparent;background:transparent;
+    color:var(--ink-2);font-size:11.5px;font-weight:600;cursor:pointer;letter-spacing:.02em;transition:.16s}
+  .pnl-seg button svg{width:18px;height:18px;opacity:.85}
+  .pnl-seg button:hover{color:var(--ink)}
+  .pnl-seg button.active{background:var(--surface);color:var(--accent);border-color:var(--line-2);
+    box-shadow:0 1px 2px rgba(0,0,0,.1),0 2px 8px -4px rgba(0,0,0,.22)}
+  .pnl-seg button.active svg{opacity:1}
+
+  /* UI 배율 스테퍼 */
+  .pnl-fs{display:flex;align-items:center;gap:8px}
+  .pnl-step{width:44px;height:44px;display:grid;place-items:center;border-radius:11px;border:1px solid var(--line-2);
+    background:var(--surface-2);color:var(--ink);font-size:22px;line-height:1;cursor:pointer;flex:0 0 auto;transition:.15s}
+  .pnl-step:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .pnl-step:active{transform:scale(.93)}
+  .pnl-fs-val{flex:1 1 auto;text-align:center;font-family:var(--mono);font-size:18px;color:var(--ink);font-weight:650}
+  .pnl-fs-val span{color:var(--ink-3);font-size:.72em;margin-left:2px;font-weight:400}
+  .pnl-mini{height:44px;padding:0 15px;border-radius:11px;border:1px solid var(--line);background:transparent;
+    color:var(--ink-2);font-size:12px;font-weight:600;cursor:pointer;flex:0 0 auto;transition:.15s;white-space:nowrap}
+  .pnl-mini:hover{color:var(--ink);border-color:var(--accent);background:var(--surface-2)}
+  .pnl-mini:active{transform:scale(.96)}
+
+  /* 버튼 (위젯 편집 = 강조 CTA, 새로고침/종료) */
+  .pnl-b{flex:1 1 auto;min-width:110px;padding:13px 14px;border-radius:12px;border:1px solid var(--line-2);
+    background:var(--surface-2);color:var(--ink);font-size:13px;font-weight:650;cursor:pointer;letter-spacing:.01em;transition:.15s}
+  .pnl-b:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .pnl-b:active{transform:translateY(1px)}
+  #btnEdit{width:100%;background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+  #btnEdit:hover{background:var(--accent);color:var(--on-accent);box-shadow:0 5px 16px -5px color-mix(in srgb,var(--accent) 60%,transparent)}
+  .pnl-btns{display:flex;gap:9px;flex-wrap:wrap}
+  .pnl-q{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 35%,transparent);background:transparent}
+  .pnl-q:hover{color:var(--crit);border-color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent)}
+
+  /* 디스플레이 목록 */
+  .pnl-list{display:flex;flex-direction:column;gap:7px}
+  .pnl-mon{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 15px;border-radius:11px;
+    background:var(--surface-2);border:1px solid var(--line);color:var(--ink);font-size:13px;font-weight:500;cursor:pointer;text-align:left;transition:.15s}
+  .pnl-mon:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .pnl-mon.cur{border-color:var(--accent);background:var(--accent-soft);color:var(--ink);font-weight:650}
+  .pnl-mon .res{font-family:var(--mono);color:var(--ink-3);font-size:12px}
+  .pnl-mon.cur .res{color:var(--ink-2)}
+
+  /* 키오스크 토글 */
+  .pnl-row2{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;color:var(--ink);padding:3px 1px}
+  .pnl-sw{width:48px;height:28px;border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2);position:relative;cursor:pointer;flex:0 0 auto;transition:.2s;padding:0}
+  .pnl-sw i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:var(--ink-3);transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .pnl-sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+  .pnl-sw[aria-checked="true"] i{left:22px;background:#fff}
+
+  /* 단축키 힌트 — 은은한 inset 박스로 정돈 */
+  .pnl-hint{font-size:11px;color:var(--ink-3);line-height:1.6;text-align:center;
+    background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:10px 12px}
+
+  /* ===================== 설정 창 · 2-pane (좌 네비 + 우 콘텐츠, 데스크탑 앱 스타일) ===================== */
+  .pset-win{display:flex;overflow:hidden;
+    width:calc(min(760px,92vw) / var(--ui-scale));
+    height:calc(min(560px,86vh) / var(--ui-scale));
+    background:var(--surface);border:1px solid var(--line-2);border-radius:18px;
+    box-shadow:0 1px 0 rgba(255,255,255,.05) inset,0 34px 90px -24px rgba(0,0,0,.6),0 10px 30px -14px rgba(0,0,0,.45);
+    animation:pnlRise .22s cubic-bezier(.2,.8,.2,1)}
+  /* 좌측 사이드바 */
+  .pset-side{flex:0 0 clamp(148px,25%,188px);display:flex;flex-direction:column;gap:4px;padding:16px 12px;
+    background:var(--surface-2);border-right:1px solid var(--line)}
+  .pset-brand{display:flex;align-items:center;gap:9px;font-size:14.5px;font-weight:700;color:var(--ink);padding:6px 10px 14px}
+  .pset-brand-mk{width:8px;height:8px;border-radius:3px;background:var(--accent);flex:0 0 auto}
+  .pset-nav{display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-height:0;overflow-y:auto}
+  .pset-navb{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;border:1px solid transparent;
+    background:transparent;color:var(--ink-2);font-size:13px;font-weight:550;cursor:pointer;text-align:left;width:100%;transition:.14s}
+  .pset-navb svg{width:17px;height:17px;flex:0 0 auto;opacity:.75}
+  .pset-navb:hover{background:var(--surface);color:var(--ink)}
+  .pset-navb.active{background:var(--accent-soft);color:var(--ink);font-weight:650;
+    border-color:color-mix(in srgb,var(--accent) 22%,transparent)}
+  .pset-navb.active svg{opacity:1;color:var(--accent)}
+  .pset-side-foot{flex:0 0 auto;font-size:10px;color:var(--ink-3);letter-spacing:.06em;padding:8px 11px 2px}
+  /* 우측 본문 */
+  .pset-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+  .pset-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line)}
+  .pset-title{font-size:16px;font-weight:650;color:var(--ink)}
+  .pset-content{flex:1 1 auto;min-height:0;overflow-y:auto;padding:20px}
+  .pset-panel{display:flex;flex-direction:column;gap:22px}
+  .pset-field{display:flex;flex-direction:column;gap:11px;min-width:0}
+  .pset-row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .pset-flabel{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .pset-flabel b{font-size:13.5px;font-weight:600;color:var(--ink)}
+  .pset-flabel span{font-size:11.5px;color:var(--ink-3);line-height:1.45}
+  .pset .pnl-hint{text-align:left}
+
+  /* QHD(2560×1440급): 넓고 세로도 충분한 화면에서만 핵심 요소를 살짝 키움 (FHD·울트라와이드는 영향 없음) */
+  @media (min-width:2000px) and (min-height:1200px){
+    .clock .t{font-size:46px}
+    .hero .val{font-size:76px}
+    .gauge{max-width:176px}
+    .gauge .num{font-size:40px}
+    .metric{padding:11px 13px}
+    .metric .mv{font-size:23px}
+    .fanrow .rpm,.drive .dmeta{font-size:13px}
+    .rowbar .k,.rowbar .v{font-size:12.5px}
+  }
+
+  /* responsive collapse for narrow / portrait sub-monitors */
+  @media (max-width:1080px){
+    .kpis{grid-template-columns:1fr 1fr}
+    .grid{grid-template-columns:repeat(6,1fr);grid-auto-flow:dense}
+    .cpu,.gpu,.sto,.net{grid-column:span 6}
+    .mem,.fan{grid-column:span 3}
+    body{overflow-y:auto}
+    .app{height:auto;min-height:100dvh}
+  }
+  @media (max-width:620px){
+    .kpis{grid-template-columns:1fr 1fr}
+    .grid{grid-template-columns:1fr}
+    .cpu,.gpu,.mem,.sto,.fan,.net{grid-column:span 1}
+    .net .pbody{flex-direction:column}
+    .netdiv{width:auto;height:1px}
+  }
+  /* portrait panels (e.g. a rotated 1200x1920): size cards to content instead of
+     stretching a few rows over a very tall viewport */
+  @media (min-width:621px) and (max-aspect-ratio:5/7){
+    .app{height:auto;min-height:100dvh;overflow-y:auto}
+    .grid{grid-auto-rows:auto}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== HEADER ===================== -->
+  <header class="top">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/>
+          <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
+        </svg>
+      </div>
+      <div>
+        <h1>SYSTEM&nbsp;VITALS</h1>
+        <div class="sub" id="host">DESKTOP-RYZEN · WIN 11</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="status"><span class="dot" id="statusDot"></span><span id="statusTxt">전체 정상</span></div>
+    <div class="clock">
+      <div class="t" id="clock">--:--:--</div>
+      <div class="d" id="date">가동 --:--:--</div>
+    </div>
+  </header>
+
+  <!-- LHM 온보딩: 실측 모드인데 CPU 온도·팬을 못 읽을 때만 노출 -->
+  <div class="lhm" id="lhmBanner" hidden>
+    <span class="lhm-ic">⚙️</span>
+    <div class="lhm-msg"><b>CPU 온도·전력·팬 RPM</b>을 실측하려면 LibreHardwareMonitor(무료)가 필요합니다.</div>
+    <button class="lhm-b lhm-auto" id="lhmAuto">자동 설치</button>
+    <a class="lhm-b" id="lhmDl" href="https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest" target="_blank" rel="noopener">직접 다운로드 ↗</a>
+    <button class="lhm-b" id="lhmHow">설정 방법</button>
+    <button class="lhm-x" id="lhmClose" aria-label="닫기">✕</button>
+  </div>
+  <div class="lhm-steps" id="lhmSteps" hidden>
+    <ol>
+      <li><b>자동 설치</b> 를 누르면 공식 GitHub 릴리스를 내려받아 실행합니다(관리자 승인 UAC 필요). 또는 <b>직접 다운로드</b> 후 압축을 풀고 관리자 권한으로 실행하세요.</li>
+      <li>LHM 메뉴에서 <b>Options ▸ Remote Web Server ▸ Run</b> 을 켭니다 (포트 8085).</li>
+      <li>이 페이지를 <b>새로고침</b> 하면 온도·팬 값이 자동으로 채워집니다.</li>
+    </ol>
+  </div>
+
+  <!-- ===================== 기본 대시보드 (#dash) ===================== -->
+  <div id="dash">
+  <!-- ===================== SUMMARY KPIs ===================== -->
+  <section class="kpis">
+    <div class="card hero">
+      <div class="top-row">
+        <div class="lab" id="heroLab">전체 시스템 전력 · 추정</div>
+        <div class="est" id="psuTxt">PSU 부하 —</div>
+      </div>
+      <div class="val"><span data-v="pwrVal">—</span><span class="u">W</span></div>
+      <div class="breakdown">
+        <span>CPU <b data-v="bdCpu">—</b><i>W</i></span>
+        <span>GPU <b data-v="bdGpu">—</b><i>W</i></span>
+        <span>기타 <b data-v="bdRest">—</b><i>W</i></span>
+      </div>
+      <svg class="spark" id="pwrSpark" viewBox="0 0 300 60" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="card gk">
+      <div class="gauge" data-gauge="cpuT">
+        <svg viewBox="0 0 100 100"><path class="track" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/><path class="fill" pathLength="100" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/></svg>
+        <div class="center"><div class="num"><span data-v="cpuT">--</span><span class="deg" id="cpuGaugeUnit">°C</span></div><div class="cap" id="cpuGaugeCap">CPU TEMP</div></div>
+      </div>
+      <div class="name">부하 <span data-v="cpuL" style="font-family:var(--mono);color:var(--ink)">--</span>%</div>
+    </div>
+
+    <div class="card gk">
+      <div class="gauge" data-gauge="gpuT">
+        <svg viewBox="0 0 100 100"><path class="track" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/><path class="fill" pathLength="100" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/></svg>
+        <div class="center"><div class="num"><span data-v="gpuT">--</span><span class="deg">°C</span></div><div class="cap">GPU TEMP</div></div>
+      </div>
+      <div class="name">사용률 <span data-v="gpuL" style="font-family:var(--mono);color:var(--ink)">--</span>%</div>
+    </div>
+
+    <div class="card gk">
+      <div class="gauge" data-gauge="ram">
+        <svg viewBox="0 0 100 100"><path class="track" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/><path class="fill" pathLength="100" d="M21.72 78.28 A40 40 0 1 1 78.28 78.28"/></svg>
+        <div class="center"><div class="num"><span data-v="ramP">--</span><span class="deg">%</span></div><div class="cap">MEMORY</div></div>
+      </div>
+      <div class="name"><span data-v="ramU" style="font-family:var(--mono);color:var(--ink)">--</span> / <span data-v="ramMaxA">32.0</span> GB</div>
+    </div>
+  </section>
+
+  <!-- ===================== MAIN GRID ===================== -->
+  <main class="grid">
+
+    <!-- CPU -->
+    <section class="card panel cpu">
+      <div class="phead">
+        <div class="pt">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+          <h2>CPU</h2><span class="dev" id="cpuName">Ryzen 7 7800X3D · 8C/16T</span>
+        </div>
+        <span class="badge" data-badge="cpuT">—</span>
+      </div>
+      <div class="pbody">
+        <div class="metrics">
+          <div class="metric"><div class="mv"><span data-v="cpuT2">--</span><span class="mu">°C</span></div><div class="ml">패키지 온도</div></div>
+          <div class="metric"><div class="mv"><span data-v="cpuL2">--</span><span class="mu">%</span></div><div class="ml">사용률</div></div>
+          <div class="metric"><div class="mv"><span data-v="cpuClk">--</span><span class="mu">GHz</span></div><div class="ml">평균 클럭</div></div>
+          <div class="metric"><div class="mv"><span data-v="cpuW">--</span><span class="mu">W</span></div><div class="ml">패키지 전력</div></div>
+        </div>
+        <div class="cores" id="cores"></div>
+      </div>
+    </section>
+
+    <!-- GPU -->
+    <section class="card panel gpu">
+      <div class="phead">
+        <div class="pt">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="8" cy="12" r="2.4"/><circle cx="15" cy="12" r="2.4"/><path d="M2 20h4M18 20h4"/></svg>
+          <h2>GPU</h2><span class="dev" id="gpuName">GeForce RTX 4070 · 12GB</span>
+        </div>
+        <span class="badge" data-badge="gpuT">—</span>
+      </div>
+      <div class="pbody">
+        <div class="metrics">
+          <div class="metric"><div class="mv"><span data-v="gpuT2">--</span><span class="mu">°C</span></div><div class="ml">코어 온도</div></div>
+          <div class="metric"><div class="mv"><span data-v="gpuHot">--</span><span class="mu">°C</span></div><div class="ml">핫스팟</div></div>
+          <div class="metric"><div class="mv"><span data-v="gpuL2">--</span><span class="mu">%</span></div><div class="ml">사용률</div></div>
+          <div class="metric"><div class="mv"><span data-v="gpuClk">--</span><span class="mu">MHz</span></div><div class="ml">코어 클럭</div></div>
+          <div class="metric"><div class="mv"><span data-v="gpuMclk">--</span><span class="mu">MHz</span></div><div class="ml">메모리 클럭</div></div>
+          <div class="metric"><div class="mv"><span data-v="gpuW">--</span><span class="mu">W</span></div><div class="ml">보드 전력</div></div>
+        </div>
+        <div class="rowbar" style="margin-top:2px">
+          <span class="k">VRAM</span>
+          <div class="bar"><i data-bar="vram"></i></div>
+          <span class="v"><span data-v="vramU">--</span> / <span data-v="vramMaxA">12.0</span> GB</span>
+        </div>
+        <div class="rowbar">
+          <span class="k">사용률</span>
+          <div class="bar"><i data-bar="gpuLoad"></i></div>
+          <span class="v"><span data-v="gpuL3">--</span> %</span>
+        </div>
+        <div class="rowbar">
+          <span class="k">팬</span>
+          <div class="bar"><i data-bar="gpuFan"></i></div>
+          <span class="v"><span data-v="gpuFanR">--</span> <span id="gpuFanU">RPM</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- MEMORY -->
+    <section class="card panel mem">
+      <div class="phead"><div class="pt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6 7v10M10 7v10M14 7v10M18 7v10"/></svg>
+        <h2>메모리</h2></div><span class="dev" id="ramSpec">DDR5-6000</span>
+      </div>
+      <div class="pbody" style="justify-content:flex-start;gap:11px">
+        <div style="text-align:center">
+          <div style="font-family:var(--mono);font-weight:650;font-size:clamp(20px,2.2vw,30px);line-height:1"><span data-v="ramU2">--</span><span style="font-size:.45em;color:var(--ink-3)"> / <span data-v="ramMaxB">32</span> GB</span></div>
+          <div class="lab" style="margin-top:4px">사용 중</div>
+        </div>
+        <div class="rowbar"><span class="k">사용량</span><div class="bar"><i data-bar="ram"></i></div><span class="v"><span data-v="ramP2">--</span> %</span></div>
+        <div class="metrics">
+          <div class="metric"><div class="mv"><span data-v="ramCache">--</span><span class="mu">GB</span></div><div class="ml">캐시</div></div>
+          <div class="metric"><div class="mv"><span data-v="ramCommit">--</span><span class="mu">GB</span></div><div class="ml">커밋</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STORAGE -->
+    <section class="card panel sto">
+      <div class="phead"><div class="pt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12a9 4 0 1 0 18 0a9 4 0 1 0-18 0"/><path d="M3 12v5a9 4 0 0 0 18 0v-5"/></svg>
+        <h2>저장장치</h2></div><span class="dev" id="stoDev">SMART · 3 드라이브</span>
+      </div>
+      <div class="pbody"><div class="list" id="drives"></div></div>
+    </section>
+
+    <!-- FANS -->
+    <section class="card panel fan">
+      <div class="phead"><div class="pt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="2.2"/><path d="M12 10c0-4 1-7 0-8c-2 1-3 4-3 6M14 12c4 0 7 1 8 0c-1-2-4-3-6-3M12 14c0 4-1 7 0 8c2-1 3-4 3-6M10 12c-4 0-7-1-8 0c1 2 4 3 6 3"/></svg>
+        <h2>팬 속도</h2></div><span class="dev">RPM</span>
+      </div>
+      <div class="pbody"><div class="list" id="fans"></div></div>
+    </section>
+
+    <!-- NETWORK -->
+    <section class="card panel net">
+      <div class="phead"><div class="pt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 8.5C5 5.5 9 4 12 4s7 1.5 10 4.5M5 12c2-2 4.5-3 7-3s5 1 7 3M8 15.5c1.2-1 2.6-1.5 4-1.5s2.8.5 4 1.5"/><circle cx="12" cy="19" r="1.3" fill="currentColor" stroke="none"/></svg>
+        <h2>네트워크</h2></div><span class="dev" id="ifName">이더넷 · 2.5 GbE</span>
+      </div>
+      <div class="pbody">
+        <div class="netcol">
+          <div class="nhead">
+            <span class="dir"><svg class="ar" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4"><path d="M12 5v14M5 12l7 7 7-7"/></svg>다운로드</span>
+            <span class="tot" id="dnTot">누적 — GB</span>
+          </div>
+          <div class="big"><span data-v="dn">--</span><span class="u">Mbps</span></div>
+          <svg class="spark" id="dnSpark" viewBox="0 0 300 60" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="netdiv"></div>
+        <div class="netcol">
+          <div class="nhead">
+            <span class="dir"><svg class="ar" viewBox="0 0 24 24" fill="none" stroke="var(--accent2)" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>업로드</span>
+            <span class="tot" id="upTot">누적 — GB</span>
+          </div>
+          <div class="big"><span data-v="up">--</span><span class="u">Mbps</span></div>
+          <svg class="spark" id="upSpark" viewBox="0 0 300 60" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+    </section>
+  </main>
+  </div><!-- /#dash -->
+
+  <!-- ===================== 위젯 캔버스 (#canvas) ===================== -->
+  <div id="canvas" hidden>
+    <div id="widgets"></div>
+  </div>
+  <!-- 편집 툴바 (편집 모드에서만) -->
+  <div id="editBar" hidden>
+    <span class="eb-title">위젯 편집</span>
+    <button class="eb-b" id="ebAdd">＋ 위젯 추가</button>
+    <button class="eb-b" id="ebReset">기본값</button>
+    <div class="eb-gridctl" title="격자 밀도 — 열이 많을수록 셀이 작아지고 세로 칸이 늘어납니다">
+      <span class="eb-gl">격자</span>
+      <button class="eb-b eb-step" id="ebGridDown" aria-label="격자 성기게">−</button>
+      <b id="ebGridVal">12</b>
+      <button class="eb-b eb-step" id="ebGridUp" aria-label="격자 촘촘하게">＋</button>
+    </div>
+    <div class="eb-spacer"></div>
+    <span class="eb-hint">모서리를 잡아 크기 조절 · 위젯을 끌어 이동</span>
+    <button class="eb-b eb-done" id="ebDone">완료</button>
+  </div>
+  <!-- 위젯 추가 팔레트 -->
+  <div class="pnl-ovl" id="paletteOvl" hidden>
+    <div class="pnl-card">
+      <div class="pnl-top"><span class="pnl-title">위젯 추가</span><button class="pnl-x" id="paletteClose" aria-label="닫기">✕</button></div>
+      <div class="wp-note" id="paletteNote" hidden>공간이 부족합니다. 위젯을 지우거나 크기를 줄여 자리를 만들어 주세요.</div>
+      <div class="wp-grid" id="paletteGrid"></div>
+    </div>
+  </div>
+
+  <!-- ===================== FOOTER ===================== -->
+  <footer class="foot">
+    <div class="live"><span class="rec"></span> LIVE · 시뮬레이션 데이터 (실제 센서 미연결)</div>
+    <div class="legend">
+      <span><i style="background:var(--good)"></i>정상</span>
+      <span><i style="background:var(--warn)"></i>주의</span>
+      <span><i style="background:var(--serious)"></i>경고</span>
+      <span><i style="background:var(--crit)"></i>위험</span>
+    </div>
+    <div id="poll">폴링 1.0 s · 프레임 60 fps</div>
+  </footer>
+
+  <!-- Electron 전용: 디스플레이 선택/제어 (일반 브라우저에선 숨김) -->
+  <button class="pnl-gear" id="pnlGear" hidden aria-label="패널 설정">⚙</button>
+  <div class="pnl-ovl pset" id="pnlOvl" hidden>
+    <div class="pset-win">
+      <!-- 좌측 네비게이션 -->
+      <aside class="pset-side">
+        <div class="pset-brand"><span class="pset-brand-mk"></span>설정</div>
+        <nav class="pset-nav" id="psetNav">
+          <button class="pset-navb active" data-tab="appearance" data-title="모양">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="7" r="2.4"/><path d="M12 7h8M4 7h1.6"/><circle cx="16" cy="17" r="2.4"/><path d="M4 17h9.6M20 17h0"/></svg>
+            <span>모양</span></button>
+          <button class="pset-navb" data-tab="layout" data-title="레이아웃">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/></svg>
+            <span>레이아웃</span></button>
+          <button class="pset-navb" data-tab="display" data-title="디스플레이" id="tabnavDisplay" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="4" width="19" height="13" rx="1.8"/><path d="M8.5 20.5h7M12 17v3.5"/></svg>
+            <span>디스플레이</span></button>
+          <button class="pset-navb" data-tab="general" data-title="일반">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.8" r=".6" fill="currentColor" stroke="none"/></svg>
+            <span>일반</span></button>
+        </nav>
+        <div class="pset-side-foot">System Vitals</div>
+      </aside>
+      <!-- 우측 콘텐츠 -->
+      <div class="pset-body">
+        <header class="pset-head"><span class="pset-title" id="psetTitle">모양</span>
+          <button class="pnl-x" id="pnlClose" aria-label="닫기">✕</button></header>
+        <div class="pset-content">
+          <!-- 모양 -->
+          <section class="pset-panel" data-panel="appearance">
+            <div class="pset-field">
+              <div class="pset-flabel"><b>테마</b><span>라이트 · 다크 · 시스템 자동</span></div>
+              <div class="pnl-seg" id="themeSeg" role="radiogroup" aria-label="테마">
+                <button data-theme-choice="light" role="radio" aria-checked="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v3M12 18.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2.5 12h3M18.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+                  <span>라이트</span></button>
+                <button data-theme-choice="dark" role="radio" aria-checked="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg>
+                  <span>다크</span></button>
+                <button data-theme-choice="system" role="radio" aria-checked="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="4" width="19" height="13" rx="1.8"/><path d="M8.5 20.5h7M12 17v3.5"/></svg>
+                  <span>시스템</span></button>
+              </div>
+            </div>
+            <div class="pset-field">
+              <div class="pset-flabel"><b>UI 배율</b><span>화면 요소 전체 크기</span></div>
+              <div class="pnl-fs">
+                <button class="pnl-step" id="fsDown" aria-label="작게">−</button>
+                <div class="pnl-fs-val"><b id="fsVal">100</b><span>%</span></div>
+                <button class="pnl-step" id="fsUp" aria-label="크게">+</button>
+                <button class="pnl-mini" id="fsReset">기본값</button>
+              </div>
+            </div>
+          </section>
+          <!-- 레이아웃 -->
+          <section class="pset-panel" data-panel="layout" hidden>
+            <div class="pset-field">
+              <div class="pset-flabel"><b>레이아웃 모드</b><span>기본 대시보드 또는 내 위젯</span></div>
+              <div class="pnl-seg" id="layoutSeg" role="radiogroup" aria-label="레이아웃">
+                <button data-layout="dash" role="radio" aria-checked="false"><span>기본</span></button>
+                <button data-layout="widgets" role="radio" aria-checked="false"><span>내 위젯</span></button>
+              </div>
+            </div>
+            <div class="pset-field">
+              <div class="pset-flabel"><b>위젯 편집</b><span>위젯 추가 · 이동 · 크기 조절</span></div>
+              <button class="pnl-b" id="btnEdit">위젯 편집 ✎</button>
+            </div>
+          </section>
+          <!-- 디스플레이 (Electron) -->
+          <section class="pset-panel" data-panel="display" hidden>
+            <div class="pset-field">
+              <div class="pset-flabel"><b>표시 모니터</b><span>패널을 띄울 화면을 선택</span></div>
+              <div class="pnl-list" id="pnlList"></div>
+            </div>
+            <div class="pset-row">
+              <div class="pset-flabel"><b>키오스크 잠금</b><span>전체화면으로 고정</span></div>
+              <button class="pnl-sw" id="pnlKiosk" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="pset-row">
+              <div class="pset-flabel"><b>부팅 시 자동 실행</b><span>Windows 시작 시 자동으로 켜짐</span></div>
+              <button class="pnl-sw" id="pnlAutoStart" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="pset-row">
+              <div class="pset-flabel"><b>지정 모니터 연결 시에만 표시</b><span>없으면 트레이에서 대기, 연결되면 자동 표시</span></div>
+              <button class="pnl-sw" id="pnlWaitDisplay" role="switch" aria-checked="false"><i></i></button>
+            </div>
+          </section>
+          <!-- 일반 -->
+          <section class="pset-panel" data-panel="general" hidden>
+            <div class="pset-field">
+              <div class="pset-flabel"><b>패널</b><span>새로고침하거나 앱을 종료</span></div>
+              <div class="pnl-btns">
+                <button class="pnl-b" id="pnlReload">새로고침</button>
+                <button class="pnl-b pnl-q" id="pnlQuit" hidden>앱 종료</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Telemetry simulation + render engine.
+   The model is a correlated random-walk so it *behaves* like a
+   real machine: a shared "demand" signal drives CPU/GPU load,
+   load drives temperature (with thermal lag), temperature drives
+   fans, and load drives power. Swap `stepModel()` for a real
+   feed (LibreHardwareMonitor JSON / nvidia-smi) — see dashboard
+   notes. Everything below only reads from `S` (state).
+   ============================================================ */
+
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const approach=(cur,tgt,rate)=>cur+(tgt-cur)*rate;      // exp smoothing / thermal lag
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+// ---- status thresholds -> color token ----
+const STATUS=['var(--good)','var(--warn)','var(--serious)','var(--crit)'];
+const STATUS_TXT=['정상','주의','경고','위험'];
+const MODE={real:false};   // flipped true when the collector's /sensors endpoint is reachable
+let _lhmDismiss=false;      // user closed the LHM onboarding banner this session
+
+// Severity encodes HEALTH, not activity. Temperature and capacity-fullness carry
+// severity; raw utilization does NOT (a pinned-at-100% GPU is healthy, not a fault),
+// so load/usage render in the neutral azure accent instead of the alarm ramp.
+// Temp curves are per-part: 7800X3D Tjmax ~89C, RTX 4070 throttles ~90-92C.
+function sevTempCPU(t){ return t<80?0 : t<85?1 : t<88?2 : 3; }
+function sevTempGPU(t){ return t<80?0 : t<86?1 : t<90?2 : 3; }
+function sevTempDrive(t){ return t<60?0 : t<70?1 : t<78?2 : 3; }   // NVMe/SATA safe range
+function sevFull(p){ return p<80?0 : p<90?1 : p<96?2 : 3; }         // RAM / VRAM / disk fullness
+
+const NCORES=8;
+
+// ---- state ----
+const S={
+  demand:0.15,
+  cpuLoad:8, cpuTemp:42, cpuClk:4.2, cpuW:32,
+  cores:Array.from({length:NCORES},()=>({load:6,clk:4.2})),
+  gpuLoad:3, gpuTemp:40, gpuHot:46, gpuClk:2610, gpuMclk:10502, gpuW:22, gpuFan:0, vram:2.4,
+  ram:11.8, ramCache:6.2, ramCommit:14.1,
+  drives:[
+    {name:'Samsung 990 PRO 2TB (NVMe)', temp:44, used:62, act:0},
+    {name:'WD Black SN770 1TB (NVMe)',   temp:41, used:38, act:0},
+    {name:'Crucial MX500 4TB (SATA)',    temp:33, used:47, act:0},
+  ],
+  fans:[
+    {name:'CPU 쿨러', rpm:920, max:2200},
+    {name:'전면 흡기 #1', rpm:760, max:1600},
+    {name:'전면 흡기 #2', rpm:760, max:1600},
+    {name:'후면 배기', rpm:840, max:1600},
+    {name:'GPU 팬 #1', rpm:0, max:2900},
+    {name:'GPU 팬 #2', rpm:0, max:2900},
+  ],
+  dn:0.4, up:0.1, dnTot:0, upTot:0,
+  // machine capacities / power model — set these from the real feed, render() reads them
+  ramMax:32, vramMax:12, gpuFanMax:2900, restW:62, psuW:850, psuEff:0.90,
+};
+
+// smoothed display copies (so bars/rings glide)
+const D=JSON.parse(JSON.stringify(S));
+
+function stepModel(){
+  // shared demand: random-walk with occasional load bursts
+  const burst=Math.random()<0.05?rnd(.4,.95):0;
+  S.demand=clamp(approach(S.demand, Math.max(burst, rnd(0,1)*rnd(0,1)), 0.10), 0, 1);
+  const d=S.demand;
+
+  // CPU
+  const cpuTgt=clamp(6 + d*92 + rnd(-6,6), 1, 100);
+  S.cpuLoad=approach(S.cpuLoad, cpuTgt, 0.35);
+  S.cpuClk = lerp(3.6, 4.98, clamp(d*1.15,0,1)) + rnd(-.04,.02);  // ~3.6..5.0 (max boost 5.0)
+  const cpuTempTgt = 40 + (S.cpuLoad/100)*49;                  // 40..89 (Tjmax 89)
+  S.cpuTemp = approach(S.cpuTemp, cpuTempTgt, 0.06);           // thermal lag
+  S.cpuW = 26 + (S.cpuLoad/100)*88 + rnd(-3,3);                // ~26..114 (120W-class part)
+  for(const c of S.cores){
+    const spread=clamp(S.cpuLoad+rnd(-28,28),0,100);
+    c.load=approach(c.load,spread,0.4);
+    c.clk = lerp(3.6,4.98,clamp(c.load/100*1.1,0,1))+rnd(-.03,.02);
+  }
+
+  // GPU (a bit more bursty, follows demand but with its own head)
+  const gLoadTgt=clamp((d>0.25? d*104 : d*40) + rnd(-8,8), 0, 100);
+  S.gpuLoad=approach(S.gpuLoad, gLoadTgt, 0.3);
+  S.gpuClk = S.gpuLoad>5 ? lerp(2400,2775,clamp(S.gpuLoad/100,0,1))+rnd(-15,15) : rnd(210,360);
+  S.gpuMclk = S.gpuLoad>5 ? 10502+rnd(-6,6) : rnd(400,810);
+  const gTempTgt = 38 + (S.gpuLoad/100)*44;                   // 38..82
+  S.gpuTemp=approach(S.gpuTemp,gTempTgt,0.05);
+  S.gpuHot = S.gpuTemp + lerp(6,14,S.gpuLoad/100)+rnd(-1,1);
+  S.gpuW = Math.min(200, 14 + (S.gpuLoad/100)*186 + rnd(-5,5)); // ~14..200 (200W TGP cap)
+  S.vram = clamp(2.2 + (S.gpuLoad/100)*8.4 + rnd(-.2,.2), 1.6, 11.7);
+  // fan curve: idle-stop under 50C, ramp after
+  const fanTgt = S.gpuTemp<50?0:clamp((S.gpuTemp-50)/32,0,1);
+  S.gpuFan = approach(S.gpuFan, fanTgt*2650, 0.12);
+
+  // RAM (creeps with demand)
+  S.ram=clamp(approach(S.ram, 10.5 + d*13 + rnd(-.6,.6), 0.2), 6, 31);
+  S.ramCache=clamp(approach(S.ramCache, 5.5 + d*5, 0.15),3,14);
+  S.ramCommit=S.ram+rnd(1.5,3.5);
+
+  // drives
+  for(const dr of S.drives){
+    const busy=Math.random()<0.25?rnd(.3,1):Math.random()<0.5?rnd(0,.25):0;
+    dr.act=approach(dr.act,busy,0.4);
+    const base=dr.name.includes('SATA')?31:39;
+    dr.temp=approach(dr.temp, base + dr.act*(dr.name.includes('NVMe')?22:9) + rnd(-1,1), 0.08);
+  }
+
+  // fans follow CPU temp
+  const sysFan = clamp((S.cpuTemp-38)/54,0,1);
+  S.fans[0].rpm=approach(S.fans[0].rpm, 700+sysFan*1500, 0.1);
+  for(let i=1;i<4;i++) S.fans[i].rpm=approach(S.fans[i].rpm, 620+sysFan*900+rnd(-30,30), 0.1);
+  S.fans[4].rpm=S.fans[5].rpm=Math.round(S.gpuFan);
+
+  // network: spiky, download-heavy
+  const dnTgt = Math.random()<0.12? rnd(180,940) : Math.random()<0.4? rnd(8,120) : rnd(0.1,6);
+  const upTgt = Math.random()<0.10? rnd(40,320) : rnd(0.1,14);
+  S.dn=approach(S.dn,dnTgt,0.5); S.up=approach(S.up,upTgt,0.5);
+  S.dnTot+=S.dn/8/1000; S.upTot+=S.up/8/1000;                 // Mb/s -> GB per ~1s tick
+
+  pushSparks();
+}
+
+// ---------- sparkline buffers ----------
+const SPN=48;
+const buf={pwr:[],dn:[],up:[],cpuW:[],gpuW:[]};   // cpuW/gpuW: 위젯 전력 그래프용 히스토리
+function pushSparks(){
+  const p = MODE.real ? (Number.isFinite(S.gpuW)?S.gpuW:0) : totalPower();
+  push(buf.pwr,p);
+  push(buf.dn, Number.isFinite(S.dn)?S.dn:0);
+  push(buf.up, Number.isFinite(S.up)?S.up:0);
+  push(buf.cpuW, Number.isFinite(S.cpuW)?S.cpuW:0);
+  push(buf.gpuW, Number.isFinite(S.gpuW)?S.gpuW:0);
+}
+function push(a,v){ a.push(v); if(a.length>SPN) a.shift(); }
+function totalPower(){ return (S.cpuW + S.gpuW + S.restW) / S.psuEff; }  // + rest-of-system, /eff -> wall est.
+
+// ---------- gauges ----------
+function setGauge(name,pct,sev){
+  const g=document.querySelector(`[data-gauge="${name}"] .fill`);
+  if(!g) return;
+  g.style.strokeDashoffset = (100 - clamp(pct,0,100)).toFixed(1);
+  g.style.stroke = sev<0 ? 'var(--accent)' : STATUS[sev];   // sev<0 = neutral (utilization gauge)
+}
+function setBar(name,pct,sev){
+  const b=document.querySelector(`[data-bar="${name}"]`);
+  if(!b) return;
+  b.style.width=clamp(pct,0,100)+'%';
+  b.style.background = sev==null?'var(--accent)':STATUS[sev];
+}
+const vEls={};
+function V(k){ return vEls[k] || (vEls[k]=document.querySelector(`[data-v="${k}"]`)); }
+function setV(k,val){ const e=V(k); if(e) e.textContent=val; }
+function setBadge(name,sev){
+  const b=document.querySelector(`[data-badge="${name}"]`);
+  if(!b) return;
+  b.textContent=STATUS_TXT[sev];
+  b.style.color=STATUS[sev];
+  b.style.background=`color-mix(in srgb, ${STATUS[sev]} 16%, transparent)`;
+}
+
+// ---------- build dynamic DOM ----------
+function build(){
+  for(const k in vEls) delete vEls[k];   // drop cached refs so a rebuild re-queries fresh DOM
+  const coresEl=document.getElementById('cores');
+  coresEl.innerHTML=S.cores.map((_,i)=>
+    `<div class="core"><span class="cid">C${i}</span>`+
+    `<div class="bar"><i data-bar="core${i}"></i></div>`+
+    `<span class="clk"><b data-v="coreLd${i}">--</b>%</span></div>`).join('');
+
+  document.getElementById('drives').innerHTML=S.drives.map((dr,i)=>
+    `<div class="drive"><div class="dtop"><span class="dname">${dr.name}</span>`+
+    `<span class="dmeta"><span class="tmp" data-v="drT${i}">--</span>°C · <span data-v="drU${i}">--</span>% 사용</span></div>`+
+    `<div class="bar"><i data-bar="dr${i}"></i></div></div>`).join('');
+
+  document.getElementById('fans').innerHTML=S.fans.map((f,i)=>
+    `<div class="fanrow"><span class="fn">${f.name}</span>`+
+    `<span class="fx"><svg class="blade" data-blade="${i}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-6 0-8c-2 1-3 4-3 6M14 12c4 0 6 1 8 0c-1-2-4-3-6-3M12 14c0 4-1 6 0 8c2-1 3-4 3-6M10 12c-4 0-6-1-8 0c1 2 4 3 6 3"/></svg>`+
+    `<span class="rpm"><span data-v="fan${i}">--</span> <small>RPM</small></span></span></div>`).join('');
+
+  blades=S.fans.map((_,i)=>document.querySelector(`[data-blade="${i}"]`));
+  rpmEls=S.fans.map((_,i)=>V('fan'+i).closest('.rpm'));
+}
+let blades=[], rpmEls=[];
+
+// ---------- sparkline rendering ----------
+const spkMax={};
+function drawSpark(id, data, color, fillColor){
+  const svg=document.getElementById(id);
+  if(!svg || data.length<2) return;
+  // match the viewBox to the real pixel box so scaling stays uniform (no stretched
+  // strokes / elliptical end-dot) on any monitor aspect, incl. 32:9 ultrawide
+  const W=Math.max(60, Math.round(svg.clientWidth||300));
+  const H=Math.max(24, Math.round(svg.clientHeight||60));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const pad=4;
+  // slowly-decaying domain -> the trace encodes magnitude consistently instead of
+  // re-scaling (and "breathing") every tick as the window max changes
+  const winMax=Math.max(...data, 1);
+  spkMax[id]=Math.max(winMax, (spkMax[id]||0)*0.985);
+  const max=spkMax[id]*1.12, min=0;
+  const dx=W/(SPN-1);
+  const x=i=> (i+(SPN-data.length))*dx;
+  const y=v=> H-pad-((v-min)/(max-min))*(H-pad*2);
+  let d='';
+  data.forEach((v,i)=>{ d+=(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' '; });
+  const first=x(0).toFixed(1), last=x(data.length-1).toFixed(1);
+  const area=`M${first} ${H} L`+d.slice(1)+`L${last} ${H} Z`;
+  const lx=x(data.length-1).toFixed(1), ly=y(data[data.length-1]).toFixed(1);
+  svg.innerHTML=
+    `<defs><linearGradient id="g_${id}" x1="0" x2="0" y1="0" y2="1">`+
+    `<stop offset="0" stop-color="${fillColor}" stop-opacity="0.22"/>`+
+    `<stop offset="1" stop-color="${fillColor}" stop-opacity="0"/></linearGradient></defs>`+
+    `<path d="${area}" fill="url(#g_${id})"/>`+
+    `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
+    `<circle cx="${lx}" cy="${ly}" r="3" fill="${color}"/>`;
+}
+
+// ---------- fast render (each frame from smoothed D) ----------
+function tween(k, tgt, rate){ D[k]=approach(D[k], tgt, rate); return D[k]; }
+
+// 렌더 루프 주기(ms). 값을 올리면 초당 렌더/리페인트 횟수가 줄어 CPU가 내려간다(200=5fps, 100=10fps).
+const LOOP_MS = 100;   // 10fps — 모니터 용도엔 충분하고 CPU/HW-가속-off 조합에서 부담이 작다
+// 평활 계수: 루프 주기와 무관하게 값이 ~1초 안에 목표에 수렴하도록 주기에서 유도(50ms→0.14와 동일 곡선).
+const SMOOTH_R = 1 - Math.pow(0.05, LOOP_MS/1000);
+function render(){
+  // smooth toward S; a null/absent source (e.g. CPU temp with no LHM) becomes NaN, not 0
+  const r=SMOOTH_R;
+  const sm=(k)=>{ const t=S[k]; if(t==null||Number.isNaN(t)){ D[k]=NaN; return; }
+                  const c=Number.isFinite(D[k])?D[k]:t; D[k]=approach(c,t,r); };
+  ['cpuLoad','cpuTemp','cpuClk','cpuW','gpuLoad','gpuTemp','gpuHot','gpuClk','gpuMclk','gpuW','gpuFan','vram','ram','dn','up'].forEach(sm);
+
+  const hasCpuT=Number.isFinite(D.cpuTemp);
+  const cpuTs=hasCpuT?sevTempCPU(D.cpuTemp):0;
+  const gpuTs=Number.isFinite(D.gpuTemp)?sevTempGPU(D.gpuTemp):0;
+  const ramP=D.ram/S.ramMax*100, ramS=sevFull(ramP);
+  const vramP=D.vram/S.vramMax*100, vramS=sevFull(vramP);
+
+  // 위젯 모드(#dash 숨김)에선 대시보드 본문의 수십 개 DOM 쓰기를 통째로 건너뛴다.
+  // 평활(D)은 위에서 이미 끝났고 위젯이 그 값을 읽으므로, 헤더 상태만 갱신하고 리턴 → renderer 부하 큰 폭 감소.
+  if(dashEl && dashEl.hidden){
+    let dTs=0; for(const dr of S.drives) dTs=Math.max(dTs, sevTempDrive(dr.temp));
+    updateStatus(Math.max(cpuTs,gpuTs,ramS,vramS,dTs));
+    return;
+  }
+
+  // KPI gauges — if CPU temp is unavailable (no LHM), this gauge shows CPU LOAD instead
+  if(hasCpuT){ setGauge('cpuT', (D.cpuTemp-30)/70*100, cpuTs); setV('cpuT', Math.round(D.cpuTemp)); }
+  else       { setGauge('cpuT', D.cpuLoad, -1); setV('cpuT', Math.round(D.cpuLoad)); }
+  setV('cpuL', Math.round(D.cpuLoad));
+  setGauge('gpuT', (D.gpuTemp-30)/70*100, gpuTs); setV('gpuT', Math.round(D.gpuTemp)); setV('gpuL', Math.round(D.gpuLoad));
+  setGauge('ram', ramP, ramS); setV('ramP', Math.round(ramP)); setV('ramU', D.ram.toFixed(1));
+
+  // hero power — real mode has no whole-system power sensor → show real GPU board power
+  if(MODE.real){
+    setV('pwrVal', Number.isFinite(D.gpuW)?Math.round(D.gpuW):'—');
+  } else {
+    const P=(D.cpuW+D.gpuW+S.restW)/S.psuEff;
+    setV('pwrVal', Math.round(P));
+    setV('bdCpu', Math.round(D.cpuW)); setV('bdGpu', Math.round(D.gpuW)); setV('bdRest', Math.round(S.restW));
+    document.getElementById('psuTxt').textContent='PSU 부하 '+Math.round(P/S.psuW*100)+'%';
+  }
+
+  // CPU panel — temp/power update when available (sim, or real+LHM); stay N/A otherwise
+  if(Number.isFinite(D.cpuTemp)){ setV('cpuT2',Math.round(D.cpuTemp)); setBadge('cpuT', cpuTs); }
+  if(Number.isFinite(D.cpuW)){ setV('cpuW',Math.round(D.cpuW)); }
+  setV('cpuL2',Math.round(D.cpuLoad));
+  setV('cpuClk', Number.isFinite(D.cpuClk)?D.cpuClk.toFixed(2):'—');
+  S.cores.forEach((c,i)=>{ setBar('core'+i, c.load, null); setV('coreLd'+i, Math.round(c.load)); }); // per-core load %, neutral accent bar
+
+  // GPU panel
+  setV('gpuT2',Math.round(D.gpuTemp));
+  setV('gpuHot', Number.isFinite(D.gpuHot)?Math.round(D.gpuHot):'—');
+  setV('gpuL2',Math.round(D.gpuLoad)); setV('gpuL3',Math.round(D.gpuLoad));
+  setV('gpuClk',Math.round(D.gpuClk)); setV('gpuMclk',Math.round(D.gpuMclk));
+  setV('gpuW',Math.round(D.gpuW));
+  setV('vramU',D.vram.toFixed(1));
+  setBar('vram', vramP, vramS);                 // VRAM fullness = capacity severity
+  setBar('gpuLoad', D.gpuLoad, null);           // usage = neutral accent
+  setBar('gpuFan', D.gpuFan/S.gpuFanMax*100, null);
+  setV('gpuFanR', Math.round(D.gpuFan));
+  setBadge('gpuT', gpuTs);                       // badge = thermal health only
+
+  // memory panel
+  setV('ramU2',D.ram.toFixed(1)); setV('ramP2',Math.round(ramP));
+  setV('ramCache',S.ramCache.toFixed(1)); setV('ramCommit',S.ramCommit.toFixed(1));
+  setBar('ram', ramP, ramS);
+  // capacity totals are data-driven (reflect real RAM/VRAM once wired)
+  setV('ramMaxA', S.ramMax.toFixed(1)); setV('ramMaxB', Math.round(S.ramMax)); setV('vramMaxA', S.vramMax.toFixed(1));
+
+  // drives
+  S.drives.forEach((dr,i)=>{
+    const hasT=Number.isFinite(dr.temp);
+    setV('drT'+i, hasT?Math.round(dr.temp):'—'); setV('drU'+i,Math.round(dr.used));
+    setBar('dr'+i, dr.used, sevFull(dr.used));
+    const t=V('drT'+i); if(t) t.style.color = hasT?STATUS[sevTempDrive(dr.temp)]:'var(--ink-3)'; });
+
+  // fans
+  S.fans.forEach((f,i)=>{
+    const rpm=Math.round(f.rpm);
+    setV('fan'+i, rpm);
+    if(rpmEls[i]) rpmEls[i].style.color = rpm===0 ? 'var(--ink-3)' : 'var(--ink)';
+    if(blades[i]) blades[i].classList.toggle('spin', rpm>0);
+  });
+
+  // network
+  setV('dn', D.dn>=100?Math.round(D.dn):D.dn.toFixed(1));
+  setV('up', D.up>=100?Math.round(D.up):D.up.toFixed(1));
+  document.getElementById('dnTot').textContent='누적 '+S.dnTot.toFixed(2)+' GB';
+  document.getElementById('upTot').textContent='누적 '+S.upTot.toFixed(2)+' GB';
+
+  // global status = worst real HEALTH signal (temps + capacity fullness), not utilization
+  let driveTs=0; for(const dr of S.drives) driveTs=Math.max(driveTs, sevTempDrive(dr.temp));
+  updateStatus(Math.max(cpuTs,gpuTs,ramS,vramS,driveTs));
+}
+// 헤더의 전체 상태 점/텍스트 갱신 (대시보드 본문을 건너뛰는 위젯 모드에서도 항상 호출)
+const dashEl=document.getElementById('dash');
+let _statusDot, _statusTxt;
+function updateStatus(worst){
+  _statusDot=_statusDot||document.getElementById('statusDot'); _statusTxt=_statusTxt||document.getElementById('statusTxt');
+  if(_statusDot) _statusDot.style.color=STATUS[worst];   // 점 채움 + 펄스 링
+  if(_statusTxt) _statusTxt.textContent= worst===0?'전체 정상': worst===1?'주의 관찰': worst===2?'온도 경고':'위험 · 확인 필요';
+}
+
+// ---------- clock ----------
+const bootMs=Date.now();
+function tickClock(){
+  const now=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  document.getElementById('clock').textContent=`${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+  const up=Math.floor((Date.now()-bootMs)/1000)+ 4*3600+37*60; // pretend uptime base
+  document.getElementById('date').textContent=`가동 ${p(Math.floor(up/3600))}:${p(Math.floor(up/60)%60)}:${p(up%60)}`;
+}
+
+// sparklines change only once per data tick — redraw then, not every frame
+function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function renderSparks(){
+  // sparklines are measurements, not alarms -> neutral structural hues, not the severity ramp.
+  // Read the live token (not a hardcoded hex) so sparks re-theme with light/dark/system.
+  const accent=cssVar('--accent'), accent2=cssVar('--accent2');
+  drawSpark('pwrSpark', buf.pwr, accent, accent);
+  drawSpark('dnSpark',  buf.dn,  accent, accent);   // download = azure
+  drawSpark('upSpark',  buf.up,  accent2, accent2); // upload = violet (distinct from severity green)
+}
+
+// ============ DATA SOURCE (auto: real if collector reachable, else simulation) ============
+// Served by collector.py → GET /sensors returns real hardware data → REAL mode auto-on.
+// Opened standalone (file / Artifact) → /sensors unreachable → built-in simulation.
+
+// Apply hardware IDENTITY: real part names + how many cores/drives/fans. Rebuilds
+// the per-device DOM only when the hardware SET changes, so the actual parts
+// (names, counts, capacities) replace the demo placeholders.
+let _structSig='';
+function applyMeta(m){
+  const sig=[m.coreCount,(m.driveNames||[]).join('|'),(m.fanNames||[]).join('|')].join('##');
+  if(sig!==_structSig){
+    _structSig=sig;
+    if(m.coreCount) S.cores=Array.from({length:m.coreCount},(_,i)=>S.cores[i]||{load:0,clk:0});
+    if(Array.isArray(m.driveNames)) S.drives=m.driveNames.map((name,i)=>({name,temp:(S.drives[i]&&S.drives[i].temp)||35,used:(S.drives[i]&&S.drives[i].used)||0}));
+    if(Array.isArray(m.fanNames))   S.fans=m.fanNames.map((name,i)=>({name,rpm:(S.fans[i]&&S.fans[i].rpm)||0,max:(S.fans[i]&&S.fans[i].max)||2200}));
+    build();   // re-renders cores/drives/fans with the real names & counts
+  }
+  const set=(id,txt)=>{ const e=document.getElementById(id); if(e&&txt) e.textContent=txt; };
+  if(m.host) set('host',[m.host,m.mobo].filter(Boolean).join(' · ').toUpperCase());
+  if(m.cpu)  set('cpuName',m.cpu+(m.coreCount?' · '+m.coreCount+'코어':''));
+  if(m.gpu)  set('gpuName',m.gpu+(m.vramTotal?' · '+Math.round(m.vramTotal)+'GB':''));
+  if(m.nic)  set('ifName',m.nic);
+  if(m.ramSpec) set('ramSpec',m.ramSpec);
+  if(Array.isArray(m.driveNames)) set('stoDev', m.driveNames.length+'개 볼륨 · 사용량');
+  if(m.ramTotal)  S.ramMax=m.ramTotal;
+  if(m.vramTotal) S.vramMax=m.vramTotal;
+  // LHM onboarding banner: only in real mode, only while CPU temp can't be read
+  const bn=document.getElementById('lhmBanner');
+  if(bn){ const need = MODE.real && m.avail && m.avail.cpuTemp===false && !_lhmDismiss;
+          bn.hidden=!need; if(!need){ const st=document.getElementById('lhmSteps'); if(st) st.hidden=true; } }
+}
+
+// Map the collector's flat JSON into S. Only assigns present fields, so partial
+// feeds degrade gracefully; render() still reads exclusively from S.
+function applyReal(j){
+  if(j.meta) applyMeta(j.meta);
+  // NOTE: temp/power use ('key' in obj) so an explicit null (sensor unavailable) OVERWRITES
+  // any stale value → renders as N/A, never a leftover simulation number.
+  if(j.cpu){ const c=j.cpu; S.cpuTemp=('temp' in c)?c.temp:S.cpuTemp; S.cpuLoad=c.load??S.cpuLoad; S.cpuClk=c.clock??S.cpuClk; S.cpuW=('power' in c)?c.power:S.cpuW;
+    if(Array.isArray(c.cores)) c.cores.forEach((k,i)=>{ if(S.cores[i]){ S.cores[i].load=k.load??S.cores[i].load; S.cores[i].clk=k.clock??S.cores[i].clk; } }); }
+  if(j.gpu){ const g=j.gpu; S.gpuTemp=g.temp??S.gpuTemp; S.gpuHot=('hotspot' in g)?g.hotspot:S.gpuHot; S.gpuLoad=g.load??S.gpuLoad; S.gpuClk=g.clock??S.gpuClk; S.gpuMclk=g.memClock??S.gpuMclk; S.gpuW=g.power??S.gpuW; S.gpuFan=g.fan??S.gpuFan; S.vram=g.vramUsed??S.vram; if(g.vramTotal) S.vramMax=g.vramTotal; }
+  if(j.ram){ S.ram=j.ram.used??S.ram; if(j.ram.total) S.ramMax=j.ram.total; S.ramCache=j.ram.cache??S.ramCache; S.ramCommit=j.ram.commit??S.ramCommit; }
+  if(Array.isArray(j.drives)) j.drives.forEach((d,i)=>{ if(S.drives[i]){ S.drives[i].temp=('temp' in d)?d.temp:S.drives[i].temp; S.drives[i].used=d.used??S.drives[i].used; } });
+  if(Array.isArray(j.fans)) j.fans.forEach((f,i)=>{ if(S.fans[i]) S.fans[i].rpm=f.rpm??S.fans[i].rpm; });
+  if(j.net){ S.dn=j.net.down??S.dn; S.up=j.net.up??S.up; S.dnTot=j.net.downTotal??S.dnTot; S.upTot=j.net.upTotal??S.upTot; }
+  if(j.power){ if(j.power.rest!=null) S.restW=j.power.rest; if(j.power.psu!=null) S.psuW=j.power.psu; }
+  pushSparks(); renderSparks();
+}
+let _pollBusy=false;
+async function pollReal(){
+  if(_pollBusy) return; _pollBusy=true;     // collector poll takes ~1s; don't overlap
+  try{ const r=await fetch('/sensors',{cache:'no-store'}); if(r.ok) applyReal(await r.json()); }
+  catch(e){ /* collector not reachable — keep last-known values */ }
+  finally{ _pollBusy=false; }
+}
+function poll(){ if(MODE.real) pollReal(); else { stepModel(); renderSparks(); } }
+
+// probe once at startup: is the real collector serving us?
+async function detectMode(){
+  try{
+    const r=await fetch('/sensors',{cache:'no-store'});
+    if(r.ok){ const j=await r.json(); MODE.real=true; applyReal(j); setupRealMode((j.meta&&j.meta.avail)||{}); return; }
+  }catch(e){/* not served by collector → simulation */}
+  MODE.real=false;
+}
+
+// one-time UI switch for real mode: relabel the CPU-temp gauge/hero, mark the
+// sensors that need LHM as N/A (never fake), and re-point GPU fan to %.
+function naMetric(vk, extraLabel){
+  const e=document.querySelector(`[data-v="${vk}"]`); if(!e) return;
+  e.textContent='N/A'; e.style.color='var(--ink-3)';
+  const mv=e.closest('.mv'); if(mv){ const mu=mv.querySelector('.mu'); if(mu) mu.textContent=''; }
+  const m=e.closest('.metric'); const ml=m&&m.querySelector('.ml'); if(ml&&extraLabel) ml.textContent+=extraLabel;
+}
+function setupRealMode(avail){
+  avail = avail || {};
+  const live=document.querySelector('.foot .live');
+  if(live) live.innerHTML='<span class="rec"></span> 실시간 · 실제 센서'+(avail.cpuTemp?' (LHM + nvidia-smi + Windows)':' (nvidia-smi + Windows 성능카운터)');
+  const hl=document.getElementById('heroLab'); if(hl) hl.textContent='GPU 보드 전력 · 실측';
+  const bd=document.querySelector('.hero .breakdown'); if(bd) bd.style.display='none';
+  const psu=document.getElementById('psuTxt'); if(psu) psu.textContent='';
+  const gfu=document.getElementById('gpuFanU'); if(gfu) gfu.textContent='%';
+  S.gpuFanMax=100;                                    // GPU fan value is a % (nvidia), not RPM
+  // CPU 온도 센서가 없을 때만: 게이지를 '부하'로 바꾸고 온도 지표를 N/A 처리
+  if(!avail.cpuTemp){
+    const cap=document.getElementById('cpuGaugeCap'); if(cap) cap.textContent='CPU 부하';
+    const un=document.getElementById('cpuGaugeUnit'); if(un) un.textContent='%';
+    naMetric('cpuT2',' · LHM 필요');
+    const b=document.querySelector('[data-badge="cpuT"]'); if(b) b.style.display='none';
+  }
+  if(!avail.cpuPower) naMetric('cpuW',' · LHM 필요');
+  if(!avail.fans){
+    const fans=document.getElementById('fans');
+    if(fans && (!S.fans||!S.fans.length))
+      fans.innerHTML='<div style="color:var(--ink-3);font-size:11.5px;line-height:1.6;text-align:center;padding:10px 4px">메인보드 팬 RPM 은<br>LibreHardwareMonitor(관리자) 설치 시 표시</div>';
+  }
+  // LHM banner buttons (wire once)
+  const how=document.getElementById('lhmHow'), steps=document.getElementById('lhmSteps'),
+        xbtn=document.getElementById('lhmClose'), auto=document.getElementById('lhmAuto'), bn=document.getElementById('lhmBanner');
+  if(how)  how.onclick=()=>{ if(steps) steps.hidden=!steps.hidden; };
+  if(xbtn) xbtn.onclick=()=>{ _lhmDismiss=true; if(bn) bn.hidden=true; if(steps) steps.hidden=true; };
+  if(auto) auto.onclick=async()=>{
+    auto.textContent='설치 시작…'; auto.disabled=true;
+    try{ const r=await fetch('/setup/lhm'); const j=await r.json(); auto.textContent=j.ok?'UAC 창을 승인하세요 ↗':'실패 — 직접 다운로드'; }
+    catch(e){ auto.textContent='실패 — 직접 다운로드'; }
+  };
+}
+
+// ---------- main loop ----------
+// Data cadence is driven by setInterval (fires reliably even when the window is
+// not the foreground one — important for an always-on side panel). rAF adds 60fps
+// smoothing when the page is visible; a low-rate interval pump guarantees the
+// readout keeps updating even if rAF is throttled/paused by the OS or compositor.
+build();
+for(let i=0;i<SPN;i++){ push(buf.pwr,totalPower()); push(buf.dn,0); push(buf.up,0); push(buf.cpuW,Number.isFinite(S.cpuW)?S.cpuW:0); push(buf.gpuW,Number.isFinite(S.gpuW)?S.gpuW:0); }
+const TICK=1000;
+render(); tickClock();
+
+// probe for the real collector first, then run the matching data loop
+detectMode().then(()=>{
+  if(!MODE.real) stepModel();     // seed the simulation only when there is no real feed
+  renderSparks(); render();
+  setInterval(poll, TICK);        // 1s poll (pollReal is guarded against overlap)
+});
+// 단일 렌더 루프(LOOP_MS 주기). 예전엔 rAF(60fps)+120ms 인터벌이 render()를 '이중'으로 돌려
+// renderer CPU를 크게 잡아먹었다(≈68회/초). 데이터는 1초에 한 번만 바뀌고 게이지·막대는 CSS
+// 트랜지션(0.35s)이 보간하므로 저프레임에서도 시각적으로 동일하다. LOOP_MS 만 바꾸면 fps 조절.
+// backgroundThrottling:false(main.js) 라 창이 비활성이어도 이 인터벌은 정상 동작.
+setInterval(()=>{ render(); tickClock(); if(window.pcWidgets) window.pcWidgets.tick(); }, LOOP_MS);
+
+// ==================== 위젯 시스템 (안드로이드 위젯 스타일 커스텀 캔버스) ====================
+// 검증된 기본 대시보드(#dash)는 그대로 두고, #canvas 에 1x1 셀 기준 그리드 위젯을 얹는다.
+// - 셀 크기 = CPU/GPU 원그래프 타일(약 150px) 기준. 편집 모드에서 모서리 핸들로 크기 조절.
+// - 위젯 UI 는 container query(cqmin/cqw) 로 자기 크기에 맞춰 폰트·게이지 배율이 최적화됨.
+// - 값은 기존 render 파이프라인과 동일한 D(평활)/S(원본) 상태를 읽어 8fps 로 갱신(게이지는 CSS 트랜지션으로 부드럽게).
+(function(){
+  const $ = id => document.getElementById(id);
+  const canvas=$('canvas'), wrap=$('widgets'), editBar=$('editBar'), dash=$('dash');
+  if(!canvas || !wrap) return;
+
+  const KEY_W='pcpanel.widgets', KEY_ON='pcpanel.useWidgets', KEY_COLS='pcpanel.wgcols';
+  const GAUGE_ARC='M21.72 78.28 A40 40 0 1 1 78.28 78.28';
+  const GRID={cols:12,rows:6,cell:156,gap:10};
+  const COLS_MIN=6, COLS_MAX=24;
+  // 격자 밀도: 열 개수를 '고정'한다(화면 폭에서 자동 계산 X). 열이 많을수록 셀이 작아져 세로 행도
+  // 늘어나므로 촘촘한 배치가 FHD에서도 들어가고, 열 수가 고정이라 해상도가 달라도 같은 배치가 재현된다.
+  let userCols = (()=>{ try{ const n=parseInt(localStorage.getItem(KEY_COLS),10); return (n>=COLS_MIN&&n<=COLS_MAX)?n:12; }catch(e){ return 12; } })();
+  let editMode=false, useWidgets=false, uid=1;
+  const els={};   // id -> DOM 노드
+
+  // ---- 아이콘 ----
+  const IC={
+    cpu:'<rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+    gpu:'<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="8" cy="12" r="2.4"/><circle cx="15" cy="12" r="2.4"/><path d="M2 20h4M18 20h4"/>',
+    mem:'<rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6 7v10M10 7v10M14 7v10M18 7v10"/>',
+    bolt:'<path d="M13 2 4 14h6l-1 8 9-12h-6z"/>',
+    clk:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    net:'<path d="M2 8.5C5 6 9 4.5 12 4.5s7 1.5 10 4M5 12c2-1.6 4.5-2.5 7-2.5s5 .9 7 2.5M8.2 15.4c1.1-.8 2.4-1.2 3.8-1.2s2.7.4 3.8 1.2"/><circle cx="12" cy="19" r="1.3"/>',
+    grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    fan:'<circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-6 0-8c-2 1-3 4-3 6M14 12c4 0 6 1 8 0c-1-2-4-3-6-3M12 14c0 4-1 6 0 8c2-1 3-4 3-6M10 12c-4 0-6-1-8 0c1 2 4 3 6 3"/>',
+    disk:'<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>'
+  };
+  const svg=(k)=>`<svg class="wg-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">${IC[k]||''}</svg>`;
+
+  // ---- 위젯 타입 레지스트리 ----
+  // kind: gauge(원그래프) / stat(큰 숫자) / net(다운·업) / list(막대 리스트) / graph(꺾은선 그래프) / metrics(수치 종합)
+  // cat: 팔레트 분류 (cpu / gpu / power / memory / network / system)
+  const num=(v,d)=> Number.isFinite(v)? (d==null?Math.round(v):v.toFixed(d)) : '—';
+  const netv=(v)=> v>=100?Math.round(v):num(v,1);
+  const WT={
+    cpuCombo:{name:'CPU 온도+사용률', ic:'cpu', kind:'gauge', cat:'cpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      // 링 길이=사용률, 링/중앙숫자 색=온도 심각도, 중앙=온도, 하단=사용률%. 온도센서 없으면 사용률 게이지로 폴백.
+      if(Number.isFinite(D.cpuTemp)){ const sev=sevTempCPU(D.cpuTemp);
+        return {pct:D.cpuLoad, val:Math.round(D.cpuTemp), u:'°C', sev, cap:'CPU', sub:`사용률 <b>${Math.round(D.cpuLoad)}</b>%`, numColor:STATUS[sev]}; }
+      return {pct:D.cpuLoad, val:Math.round(D.cpuLoad), u:'%', sev:-1, cap:'CPU LOAD', sub:'온도 센서 없음'}; }},
+    cpuTemp:{name:'CPU 온도', ic:'cpu', kind:'gauge', cat:'cpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      if(Number.isFinite(D.cpuTemp)) return {pct:(D.cpuTemp-30)/70*100,val:Math.round(D.cpuTemp),u:'°C',sev:sevTempCPU(D.cpuTemp),cap:'CPU TEMP',sub:`부하 <b>${num(D.cpuLoad)}</b>%`};
+      return {pct:D.cpuLoad,val:Math.round(D.cpuLoad),u:'%',sev:-1,cap:'CPU LOAD',sub:'온도 센서 없음'}; }},
+    cpuLoad:{name:'CPU 사용률', ic:'cpu', kind:'gauge', cat:'cpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      return {pct:D.cpuLoad,val:Math.round(D.cpuLoad),u:'%',sev:-1,cap:'CPU LOAD',sub:`클럭 <b>${num(D.cpuClk,2)}</b> GHz`}; }},
+    cpuClock:{name:'CPU 클럭', ic:'clk', kind:'stat', cat:'cpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      return {label:'CPU 클럭', big:num(D.cpuClk,2), u:'GHz', sub:`부하 <b>${num(D.cpuLoad)}</b>%`}; }},
+    cpuAll:{name:'CPU 종합', ic:'cpu', kind:'cpupanel', cat:'cpu', def:{w:4,h:2}, min:{w:2,h:2}, panel(){
+      const hasT=Number.isFinite(D.cpuTemp), sev=hasT?sevTempCPU(D.cpuTemp):0;
+      return { title:'CPU', ic:'cpu', dev:(document.getElementById('cpuName')||{}).textContent||'', sev,
+        metrics:[ {v:hasT?Math.round(D.cpuTemp):'—', u:'°C', l:'패키지 온도', c:hasT?STATUS[sev]:null},
+          {v:Math.round(D.cpuLoad), u:'%', l:'사용률'},
+          {v:num(D.cpuClk,2), u:'GHz', l:'평균 클럭'},
+          {v:num(D.cpuW), u:'W', l:'패키지 전력'} ],
+        cores:S.cores.map((c,i)=>({k:'C'+i, pct:clamp(c.load,0,100), v:Math.round(c.load)+'%'})) }; }},
+    gpuCombo:{name:'GPU 온도+사용률', ic:'gpu', kind:'gauge', cat:'gpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      if(Number.isFinite(D.gpuTemp)){ const sev=sevTempGPU(D.gpuTemp);
+        return {pct:D.gpuLoad, val:Math.round(D.gpuTemp), u:'°C', sev, cap:'GPU', sub:`사용률 <b>${Math.round(D.gpuLoad)}</b>%`, numColor:STATUS[sev]}; }
+      return {pct:D.gpuLoad, val:Math.round(D.gpuLoad), u:'%', sev:-1, cap:'GPU LOAD', sub:'온도 센서 없음'}; }},
+    gpuTemp:{name:'GPU 온도', ic:'gpu', kind:'gauge', cat:'gpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      return {pct:(D.gpuTemp-30)/70*100,val:num(D.gpuTemp),u:'°C',sev:Number.isFinite(D.gpuTemp)?sevTempGPU(D.gpuTemp):0,cap:'GPU TEMP',sub:`사용률 <b>${num(D.gpuLoad)}</b>%`}; }},
+    gpuLoad:{name:'GPU 사용률', ic:'gpu', kind:'gauge', cat:'gpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      return {pct:D.gpuLoad,val:Math.round(D.gpuLoad),u:'%',sev:-1,cap:'GPU LOAD',sub:`클럭 <b>${num(D.gpuClk)}</b> MHz`}; }},
+    gpuClock:{name:'GPU 클럭', ic:'clk', kind:'stat', cat:'gpu', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      return {label:'GPU 클럭', big:num(D.gpuClk), u:'MHz', sub:`메모리 <b>${num(D.gpuMclk)}</b>MHz`}; }},
+    gpuAll:{name:'GPU 종합', ic:'gpu', kind:'gpupanel', cat:'gpu', def:{w:5,h:2}, min:{w:2,h:2}, panel(){
+      const hasT=Number.isFinite(D.gpuTemp), sev=hasT?sevTempGPU(D.gpuTemp):0;
+      const vramP=clamp(D.vram/S.vramMax*100,0,100);
+      return { title:'GPU', ic:'gpu', dev:(document.getElementById('gpuName')||{}).textContent||'', sev,
+        metrics:[ {v:num(D.gpuTemp), u:'°C', l:'코어 온도', c:hasT?STATUS[sev]:null},
+          {v:Math.round(D.gpuLoad), u:'%', l:'사용률'},
+          {v:num(D.gpuClk), u:'MHz', l:'코어 클럭'},
+          {v:num(D.gpuMclk), u:'MHz', l:'메모리 클럭'},
+          {v:num(D.gpuW), u:'W', l:'보드 전력'} ],
+        bars:[ {k:'VRAM', pct:vramP, v:`${num(D.vram,1)} / ${S.vramMax.toFixed(1)} GB`, c:STATUS[sevFull(vramP)]},
+          {k:'사용률', pct:clamp(D.gpuLoad,0,100), v:`${Math.round(D.gpuLoad)} %`, c:'var(--accent)'},
+          {k:'팬', pct:clamp(D.gpuFan/S.gpuFanMax*100,0,100), v:`${Math.round(D.gpuFan)} RPM`, c:'var(--accent)'} ] }; }},
+    mem:{name:'메모리', ic:'mem', kind:'gauge', cat:'memory', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      const p=D.ram/S.ramMax*100; return {pct:p,val:Math.round(p),u:'%',sev:sevFull(p),cap:'MEMORY',sub:`<b>${num(D.ram,1)}</b> / ${S.ramMax.toFixed(1)} GB`}; }},
+    power:{name:'전력 (수치)', ic:'bolt', kind:'stat', cat:'power', def:{w:1,h:1}, min:{w:1,h:1}, data(){
+      if(MODE.real) return {label:'GPU 전력', big:num(D.gpuW), u:'W', sub:`코어 ${num(D.gpuClk)}MHz`};
+      const P=(D.cpuW+D.gpuW+S.restW)/S.psuEff;
+      return {label:'시스템 전력', big:Math.round(P), u:'W', sub:`CPU <b>${num(D.cpuW)}</b>W · GPU <b>${num(D.gpuW)}</b>W`}; }},
+    powerCpuGraph:{name:'CPU 전력 그래프', ic:'bolt', kind:'graph', cat:'power', def:{w:2,h:1}, min:{w:1,h:1}, graph(){
+      return { series:[{data:buf.cpuW, color:'var(--accent)'}],
+        top:`<span class="wg-gval">${num(D.cpuW)}</span><span class="wg-gu">W</span><span class="wg-gsub">피크 ${Math.round(Math.max(0,...buf.cpuW))}W</span>` }; }},
+    powerGpuGraph:{name:'GPU 전력 그래프', ic:'bolt', kind:'graph', cat:'power', def:{w:2,h:1}, min:{w:1,h:1}, graph(){
+      return { series:[{data:buf.gpuW, color:'var(--accent2)'}],
+        top:`<span class="wg-gval">${num(D.gpuW)}</span><span class="wg-gu">W</span><span class="wg-gsub">피크 ${Math.round(Math.max(0,...buf.gpuW))}W</span>` }; }},
+    powerBothGraph:{name:'CPU+GPU 전력 그래프', ic:'bolt', kind:'graph', cat:'power', def:{w:2,h:2}, min:{w:2,h:1}, graph(){
+      const cpu=Number.isFinite(D.cpuW)?D.cpuW:0, gpu=Number.isFinite(D.gpuW)?D.gpuW:0;
+      const sumArr=buf.cpuW.map((v,i)=> (v||0)+(buf.gpuW[i]||0));   // 두 버퍼는 매 틱 함께 push → 길이 동일
+      return { series:[   // 합계(강조·면적) → CPU선 → GPU선 순으로 겹쳐 그림
+          {data:sumArr,   color:'var(--good)',    fill:true,  width:2.2},
+          {data:buf.cpuW, color:'var(--accent)',  fill:false, width:1.8},
+          {data:buf.gpuW, color:'var(--accent2)', fill:false, width:1.8}],
+        top:`<span class="wg-gval" style="color:var(--good)">${Math.round(cpu+gpu)}</span><span class="wg-gu">W</span>`+
+            `<span class="wg-gsub">합계 · CPU <b style="color:var(--accent)">${num(D.cpuW)}</b> · GPU <b style="color:var(--accent2)">${num(D.gpuW)}</b> W</span>` }; }},
+    net:{name:'네트워크 (수치)', ic:'net', kind:'net', cat:'network', def:{w:2,h:1}, min:{w:1,h:1}, data(){
+      return {dn:netv(D.dn), up:netv(D.up)}; }},
+    netGraph:{name:'네트워크 그래프', ic:'net', kind:'graph', cat:'network', def:{w:2,h:2}, min:{w:1,h:1}, graph(){
+      return { series:[{data:buf.dn, color:'var(--accent)'},{data:buf.up, color:'var(--accent2)'}],
+        top:`<span class="wg-gseg" style="color:var(--accent)">▼ <b>${netv(D.dn)}</b> Mbps</span><span class="wg-gseg" style="color:var(--accent2)">▲ <b>${netv(D.up)}</b> Mbps</span>` }; }},
+    netSplit:{name:'네트워크 (다운/업 분리)', ic:'net', kind:'netsplit', cat:'network', def:{w:4,h:2}, min:{w:2,h:1}, netsplit(){
+      return { nic:(document.getElementById('ifName')||{}).textContent||'',
+        dn:netv(D.dn), up:netv(D.up), dnTot:S.dnTot.toFixed(2), upTot:S.upTot.toFixed(2) }; }},
+    cores:{name:'CPU 코어', ic:'grid', kind:'list', cat:'system', def:{w:2,h:2}, min:{w:1,h:1}, rows(){
+      return S.cores.map((c,i)=>({k:'C'+i, pct:c.load, vv:Math.round(c.load)+'%', sev:null})); }},
+    fans:{name:'팬 속도', ic:'fan', kind:'fanlist', cat:'system', def:{w:2,h:2}, min:{w:2,h:1}, rows(){
+      return S.fans.filter(f=>Math.round(f.rpm)>0).map(f=>({name:f.name, rpm:Math.round(f.rpm), max:f.max||2200})); }},
+    storage:{name:'스토리지', ic:'disk', kind:'drives', cat:'system', def:{w:3,h:2}, min:{w:2,h:1}, rows(){
+      return S.drives.map(dr=>({name:dr.name, temp:dr.temp, used:clamp(dr.used,0,100)})); }},
+  };
+  // 팔레트 분류 순서/이름 + 각 분류에 표시할 위젯 순서
+  const CATS=[
+    {key:'cpu',     name:'CPU',   items:['cpuCombo','cpuTemp','cpuLoad','cpuClock','cpuAll']},
+    {key:'gpu',     name:'GPU',   items:['gpuCombo','gpuTemp','gpuLoad','gpuClock','gpuAll']},
+    {key:'power',   name:'전력',  items:['power','powerCpuGraph','powerGpuGraph','powerBothGraph']},
+    {key:'memory',  name:'메모리', items:['mem']},
+    {key:'network', name:'네트워크', items:['net','netGraph','netSplit']},
+    {key:'system',  name:'시스템', items:['cores','fans','storage']},
+  ];
+  const ORDER=CATS.reduce((a,c)=>a.concat(c.items),[]);
+
+  // ---- 기본 레이아웃 ----
+  function defaults(){
+    const mk=(type,x,y)=>({id:uid++, type, x, y, w:WT[type].def.w, h:WT[type].def.h});
+    return [ mk('cpuCombo',0,0), mk('gpuCombo',1,0), mk('mem',2,0), mk('power',3,0),
+             mk('net',0,1), mk('cpuClock',2,1), mk('gpuClock',3,1),   // 온도+사용률 통합 게이지로 상단 정리
+             mk('cores',0,2), mk('storage',2,2), mk('fans',5,2) ];  // storage 3x2 → 2~4열, fans → 5열부터
+  }
+  let widgets=[];
+  function load(){
+    try{
+      const raw=localStorage.getItem(KEY_W);
+      // 저장된 값이 있으면(빈 배열 '[]' 포함) 그대로 존중한다. 길이 검사를 하면 사용자가 의도적으로
+      // 모두 지운 빈 캔버스가 리로드 때 기본 배치로 되살아나는 버그가 생김. 값이 없을 때만 기본 배치.
+      if(raw){ const a=JSON.parse(raw); if(Array.isArray(a)){ widgets=a.filter(w=>WT[w.type]); widgets.forEach(w=>{uid=Math.max(uid,(w.id||0)+1);}); return; } }
+    }catch(e){}
+    widgets=defaults();
+  }
+  function save(){ try{ localStorage.setItem(KEY_W, JSON.stringify(widgets)); localStorage.setItem(KEY_ON, useWidgets?'1':'0'); }catch(e){} }
+  const byId=id=>widgets.find(w=>String(w.id)===String(id));
+
+  // ---- 스켈레톤 ----
+  function skeleton(type){
+    const t=WT[type], head=`<div class="wg-head"><span class="wg-ic-w">${svg(t.ic)}</span><span class="wg-t jt">${t.name}</span></div>`;
+    if(t.kind==='gauge') return `<div class="wg wg-g">
+      <div class="wg-gauge"><svg viewBox="0 0 100 100"><path class="track" d="${GAUGE_ARC}"/><path class="fill" pathLength="100" d="${GAUGE_ARC}"/></svg>
+        <div class="wg-ctr"><div class="wg-num"><span class="jv">--</span><span class="wg-u ju">°C</span></div><div class="wg-cap jc">—</div></div></div>
+      <div class="wg-sub js"></div></div>`;
+    if(t.kind==='stat') return `<div class="wg">${head}
+      <div class="wg-stat"><div class="wg-big"><span class="jv">--</span><span class="wg-u ju">W</span></div><div class="wg-substat js"></div></div></div>`;
+    if(t.kind==='net') return `<div class="wg">${head}
+      <div class="wg-stat">
+        <div><div class="wg-cap">▼ 다운로드</div><div class="wg-big" style="font-size:clamp(15px,20cqmin,40px)"><span class="jd">--</span><span class="wg-u">Mbps</span></div></div>
+        <div><div class="wg-cap">▲ 업로드</div><div class="wg-big" style="font-size:clamp(15px,20cqmin,40px)"><span class="ju2">--</span><span class="wg-u">Mbps</span></div></div>
+      </div></div>`;
+    if(t.kind==='graph') return `<div class="wg">${head}
+      <div class="wg-graphtop js"></div>
+      <svg class="wg-spark jspark" preserveAspectRatio="none"></svg></div>`;
+    if(t.kind==='netsplit') return `<div class="wg wg-netsplit-w">
+      <div class="wgp-head"><span class="wg-ic-w">${svg(t.ic)}</span><span class="wgp-title">네트워크</span><span class="wgp-dev jif"></span></div>
+      <div class="wg-netcols">
+        <div class="wg-netcol">
+          <div class="wg-nhead"><span class="wg-dir" style="color:var(--accent)"><svg class="wg-ar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12l7 7 7-7"/></svg>다운로드</span><span class="wg-tot jdntot">누적 — GB</span></div>
+          <div class="wg-nbig"><span class="jdv">--</span><span class="wg-u">Mbps</span></div>
+          <svg class="wg-nspark jdnspark" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="wg-netdiv"></div>
+        <div class="wg-netcol">
+          <div class="wg-nhead"><span class="wg-dir" style="color:var(--accent2)"><svg class="wg-ar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>업로드</span><span class="wg-tot juptot">누적 — GB</span></div>
+          <div class="wg-nbig"><span class="jupv">--</span><span class="wg-u">Mbps</span></div>
+          <svg class="wg-nspark jupspark" preserveAspectRatio="none"></svg>
+        </div>
+      </div></div>`;
+    if(t.kind==='cpupanel'||t.kind==='gpupanel') return `<div class="wg wg-panel">
+      <div class="wgp-head"><span class="wg-ic-w">${svg(t.ic)}</span><span class="wgp-title">${t.kind==='cpupanel'?'CPU':'GPU'}</span><span class="wgp-dev jdev"></span><span class="wgp-badge jbadge">—</span></div>
+      <div class="wgp-metrics jm"></div>
+      <div class="wgp-lower jlow"></div></div>`;
+    if(t.kind==='drives') return `<div class="wg">${head}<div class="wg-drives jl"></div></div>`;
+    if(t.kind==='fanlist') return `<div class="wg">${head}<div class="wg-fans jl"></div></div>`;
+    return `<div class="wg">${head}<div class="wg-list jl"></div></div>`;  // list
+  }
+
+  // ---- 위젯용 꺾은선 그래프(다중 시리즈, 공통 Y축) ----
+  // 색은 'var(--accent)' 같은 CSS 변수 문자열 → 인라인 style 로 넣어 테마 전환 시 자동 재색.
+  function wspark(svg, series){
+    const valid=series.filter(s=>s.data && s.data.length>=2);
+    if(!valid.length){ svg.innerHTML=''; return; }
+    const W=Math.max(60,Math.round(svg.clientWidth||300));
+    const H=Math.max(24,Math.round(svg.clientHeight||60));
+    svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+    const pad=4;
+    let mx=0; for(const s of valid) for(const v of s.data) if(v>mx) mx=v;
+    const max=Math.max(mx*1.15,1), min=0, dx=W/(SPN-1);
+    let html='';
+    for(const s of valid){
+      const data=s.data;
+      const x=i=> (i+(SPN-data.length))*dx;
+      const y=v=> H-pad-((clamp(v,min,max)-min)/(max-min))*(H-pad*2);
+      let d=''; for(let i=0;i<data.length;i++){ d+=(i?'L':'M')+x(i).toFixed(1)+' '+y(data[i]).toFixed(1)+' '; }
+      const first=x(0).toFixed(1), last=x(data.length-1).toFixed(1);
+      const area=`M${first} ${H} L`+d.slice(1)+`L${last} ${H} Z`;
+      const lx=x(data.length-1).toFixed(1), ly=y(data[data.length-1]).toFixed(1);
+      if(s.fill!==false) html+=`<path d="${area}" style="fill:${s.color};fill-opacity:.12"/>`;
+      html+=`<path d="${d}" fill="none" style="stroke:${s.color}" stroke-width="${s.width||2}" stroke-linejoin="round" stroke-linecap="round"/>`+
+            `<circle cx="${lx}" cy="${ly}" r="2.6" style="fill:${s.color}"/>`;
+    }
+    svg.innerHTML=html;
+  }
+
+  // ---- 값 갱신 ----
+  const q=(el,s)=>el.querySelector(s);
+  function paintOne(wd){
+    const el=els[wd.id]; if(!el) return;
+    const t=WT[wd.type];
+    if(t.kind==='gauge'){
+      const d=t.data(), f=q(el,'.fill');
+      if(f){ f.style.strokeDashoffset=(100-clamp(d.pct,0,100)).toFixed(1); f.style.stroke = d.sev<0?'var(--accent)':STATUS[d.sev]; }
+      const jv=q(el,'.jv'); jv.textContent=d.val; jv.style.color=d.numColor||'';   // combo: 중앙 온도 숫자를 심각도 색으로(없으면 기본 잉크)
+      q(el,'.ju').textContent=d.u; q(el,'.jc').textContent=d.cap; q(el,'.js').innerHTML=d.sub;
+    } else if(t.kind==='stat'){
+      const d=t.data();
+      q(el,'.jt').textContent=d.label; q(el,'.jv').textContent=d.big; q(el,'.ju').textContent=d.u; q(el,'.js').innerHTML=d.sub||'';
+    } else if(t.kind==='net'){
+      const d=t.data(); q(el,'.jd').textContent=d.dn; q(el,'.ju2').textContent=d.up;
+    } else if(t.kind==='graph'){
+      const g=t.graph(); q(el,'.js').innerHTML=g.top; wspark(q(el,'.jspark'), g.series);
+    } else if(t.kind==='netsplit'){
+      // 크기별 변형 없이 항상 고정된 다운로드/업로드 분리 레이아웃(클래식 대시보드 스타일).
+      const n=t.netsplit();
+      const jif=q(el,'.jif'); if(jif) jif.textContent=n.nic;
+      q(el,'.jdv').textContent=n.dn; q(el,'.jupv').textContent=n.up;
+      q(el,'.jdntot').textContent='누적 '+n.dnTot+' GB';
+      q(el,'.juptot').textContent='누적 '+n.upTot+' GB';
+      wspark(q(el,'.jdnspark'), [{data:buf.dn, color:'var(--accent)'}]);
+      wspark(q(el,'.jupspark'), [{data:buf.up, color:'var(--accent2)'}]);
+    } else if(t.kind==='cpupanel'||t.kind==='gpupanel'){
+      const p=t.panel();
+      q(el,'.jdev').textContent=p.dev;
+      const bd=q(el,'.jbadge'); bd.textContent=STATUS_TXT[p.sev]; bd.style.color=STATUS[p.sev];
+      bd.style.background=`color-mix(in srgb, ${STATUS[p.sev]} 16%, transparent)`;
+      q(el,'.jm').innerHTML=p.metrics.map(m=>
+        `<div class="wgp-m"><div class="wgp-mv"${m.c?` style="color:${m.c}"`:''}>${m.v}<span class="wgp-mu">${m.u}</span></div><div class="wgp-ml">${m.l}</div></div>`).join('');
+      const low=q(el,'.jlow');
+      if(p.cores){ low.className='wgp-lower wgp-cores jlow';
+        low.innerHTML=p.cores.map(c=>`<div class="wgp-core"><span class="wgp-ck">${c.k}</span><div class="wg-bar"><i style="width:${c.pct}%;background:var(--accent)"></i></div><span class="wgp-cv">${c.v}</span></div>`).join('');
+      } else { low.className='wgp-lower wgp-bars jlow';
+        low.innerHTML=p.bars.map(b=>`<div class="wgp-bar"><span class="wgp-bk">${b.k}</span><div class="wg-bar"><i style="width:${b.pct}%;background:${b.c}"></i></div><span class="wgp-bv">${b.v}</span></div>`).join('');
+      }
+    } else if(t.kind==='drives'){
+      const rows=t.rows();
+      q(el,'.jl').innerHTML=rows.map(dr=>{
+        const hasT=Number.isFinite(dr.temp), tc=hasT?STATUS[sevTempDrive(dr.temp)]:'var(--ink-3)';
+        return `<div class="wg-dr"><div class="wg-dr-top"><span class="wg-dr-name">${dr.name}</span>`+
+          `<span class="wg-dr-meta"><b style="color:${tc}">${hasT?Math.round(dr.temp)+'°C':'—'}</b> · ${Math.round(dr.used)}% 사용</span></div>`+
+          `<div class="wg-bar"><i style="width:${dr.used}%;background:${STATUS[sevFull(dr.used)]}"></i></div></div>`;
+      }).join('') || `<div class="wg-more">드라이브 없음</div>`;
+    } else if(t.kind==='fanlist'){
+      const rows=t.rows();
+      q(el,'.jl').innerHTML=rows.map(f=>{
+        const pct=clamp(f.rpm/f.max*100,0,100);
+        return `<div class="wg-fan"><span class="wg-fan-name">${f.name}</span><div class="wg-bar"><i style="width:${pct}%;background:var(--accent)"></i></div><span class="wg-fan-rpm">${f.rpm}<small>RPM</small></span></div>`;
+      }).join('') || `<div class="wg-more">동작 중인 팬 없음</div>`;
+    } else { // list — 위젯 높이에 맞춰 표시 행 수를 계산(넘치면 "+N 더")
+      const rows=t.rows();
+      const jl=q(el,'.jl');
+      // .wg-list 는 flex 로 가용 높이를 채우므로 clientHeight(레이아웃 px, ui-scale 영향 없음)로 실제 높이를 잰다
+      const avail=jl.clientHeight || (wd.h*GRID.cell - 44);
+      // 행 피치를 CSS 와 동일하게 컨테이너 크기(cqmin)에서 유도한다 — 고정 22px 은 큰 위젯(≥3×3)에서
+      // 실제보다 많이 세어 마지막 줄이 잘렸음. .wg-row 폰트 clamp(8,5.5cqmin,12)·line 1.15, gap max(3,2cqmin).
+      const cq=Math.min(el.clientWidth,el.clientHeight)/100;
+      const rowH=Math.max(clamp(5.5*cq,8,12)*1.15, Math.max(4,3*cq));
+      const rgap=Math.max(3,2*cq);
+      const fit=Math.max(1, Math.floor((avail+rgap)/(rowH+rgap)));
+      let shown, extra=0;
+      if(rows.length>fit){ shown=rows.slice(0, Math.max(1, fit-1)); extra=rows.length-shown.length; }
+      else shown=rows;
+      let html=shown.map(r=>{
+        const col=r.sev==null?'var(--accent)':STATUS[r.sev];
+        return `<div class="wg-row"><span class="wg-k">${r.k}</span><div class="wg-bar"><i style="width:${clamp(r.pct,0,100).toFixed(0)}%;background:${col}"></i></div><span class="wg-vv">${r.vv}</span></div>`;
+      }).join('');
+      if(extra>0) html+=`<div class="wg-more">+${extra} 더</div>`;
+      if(!rows.length) html=`<div class="wg-more">데이터 없음</div>`;
+      q(el,'.jl').innerHTML=html;
+    }
+  }
+  function paintAll(){ for(const wd of widgets) paintOne(wd); }
+
+  // ---- 위치/렌더 ----
+  function applyPos(el,wd){ el.style.setProperty('--x',wd.x); el.style.setProperty('--y',wd.y); el.style.setProperty('--w',wd.w); el.style.setProperty('--h',wd.h); }
+  function renderAll(){
+    wrap.innerHTML=''; for(const k in els) delete els[k];
+    for(const wd of widgets){
+      const el=document.createElement('div');
+      el.className='wdg'; el.dataset.id=wd.id; applyPos(el,wd);
+      el.innerHTML=skeleton(wd.type)+'<button class="wdg-del" title="삭제" aria-label="위젯 삭제">✕</button><div class="wdg-resize" title="크기 조절"></div>';
+      bindEdit(el); wrap.appendChild(el); els[wd.id]=el;
+    }
+    paintAll();
+  }
+
+  // ---- 그리드 레이아웃(셀 크기·열/행 계산) ----
+  function layout(){
+    if(canvas.hidden) return;
+    const W=canvas.clientWidth, H=canvas.clientHeight;
+    if(W<60||H<60) return;
+    const gap=10;
+    // 열 개수는 사용자가 정한 값으로 고정. 셀이 너무 작아지지 않게 폭에 따라 상한만 둔다.
+    const cols=Math.min(userCols, Math.max(COLS_MIN, Math.floor((W+gap)/(56+gap))));
+    const cell=Math.floor((W-(cols-1)*gap)/cols);
+    const rows=Math.max(2, Math.floor((H+gap)/(cell+gap)));
+    GRID.cols=cols; GRID.rows=rows; GRID.cell=cell; GRID.gap=gap;
+    wrap.style.setProperty('--wcols',cols);
+    wrap.style.setProperty('--wcell',cell+'px');
+    wrap.style.setProperty('--wgap',gap+'px');
+    fitDisplay(cols,rows);
+  }
+  // 그리드가 설계 배치보다 좁아지면(UI 배율 ↑ / 창 축소) '표시'만 임시로 줄여 겹치지 않게 재배치한다.
+  // 저장된 설계 좌표(wd.x/y/w/h)는 절대 바꾸지 않고 element 인라인 변수만 덮어쓰므로, 넓어지면 원래 배치로 복원된다.
+  // (예전엔 여기서 wd 를 직접 clamp+save 해서 배율만 올려도 배치가 영구히 찌그러졌음 — 비가역 손상 버그)
+  function fitDisplay(cols,rows){
+    const placed=[];
+    const hit=(x,y,w,h)=> placed.some(p=> x<p.x+p.w && x+w>p.x && y<p.y+p.h && y+h>p.y);
+    // 겹치면 위에서부터 빈칸을 찾고, 그래도 없으면 아래로 흘려보낸다(세로 무제한 → 캔버스 세로 스크롤).
+    // 예전 {0,0} 고정 폴백은 그리드가 내용보다 작을 때 위젯을 서로 포개버렸음.
+    const maxY=widgets.length+rows+8;
+    const slotFor=(w,h)=>{ for(let y=0;y<=maxY;y++) for(let x=0;x<=cols-w;x++) if(!hit(x,y,w,h)) return {x,y}; return null; };
+    let flow=0;
+    for(const wd of widgets){
+      const el=els[wd.id]; if(!el) continue;
+      const w=Math.min(wd.w,cols), h=Math.min(wd.h,rows);
+      let x=clamp(wd.x,0,cols-w), y=Math.max(0,wd.y);   // 세로는 clamp 안 함(넘치면 스크롤)
+      if(hit(x,y,w,h)){ const s=slotFor(w,h); if(s){ x=s.x; y=s.y; } else { x=0; y=flow; } }
+      el.style.setProperty('--x',x); el.style.setProperty('--y',y);
+      el.style.setProperty('--w',w); el.style.setProperty('--h',h);
+      placed.push({x,y,w,h}); flow=Math.max(flow,y+h);
+    }
+  }
+
+  // ---- 점유/슬롯 ----
+  function occupied(x,y,w,h,skip){ for(const wd of widgets){ if(String(wd.id)===String(skip))continue;
+    if(x<wd.x+wd.w && x+w>wd.x && y<wd.y+wd.h && y+h>wd.y) return true; } return false; }
+  // 빈 w×h 블록의 좌상단을 반환. 없으면 null(겹쳐 쌓는 대신 실패를 알림).
+  function findSlot(w,h){ for(let y=0;y<=GRID.rows-h;y++) for(let x=0;x<=GRID.cols-w;x++) if(!occupied(x,y,w,h,-1)) return {x,y}; return null; }
+
+  const scaleNow=()=> parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale'))||1;
+
+  // ---- 편집: 드래그 이동 · 모서리 크기조절 ----
+  function bindEdit(el){
+    const wd=()=>byId(el.dataset.id);
+    // 삭제
+    q(el,'.wdg-del').addEventListener('click', e=>{ e.stopPropagation();
+      widgets=widgets.filter(w=>String(w.id)!==String(el.dataset.id)); save(); renderAll(); });
+    // 이동
+    el.addEventListener('pointerdown', e=>{
+      if(!editMode) return;
+      if(e.target.closest('.wdg-del')||e.target.closest('.wdg-resize')) return;
+      e.preventDefault();
+      const w=wd(); if(!w) return;
+      const step=(GRID.cell+GRID.gap)*scaleNow();
+      const sx=e.clientX, sy=e.clientY, ox=w.x, oy=w.y;
+      try{ el.setPointerCapture(e.pointerId); }catch(_){}
+      el.classList.add('drag');
+      const mv=ev=>{
+        let nx=clamp(ox+Math.round((ev.clientX-sx)/step),0,GRID.cols-w.w);
+        let ny=clamp(oy+Math.round((ev.clientY-sy)/step),0,Math.max(0,GRID.rows-w.h));
+        if((nx!==w.x||ny!==w.y)&&!occupied(nx,ny,w.w,w.h,w.id)){ w.x=nx; w.y=ny; applyPos(el,w); }
+      };
+      const up=()=>{ el.classList.remove('drag'); el.removeEventListener('pointermove',mv); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); save(); };
+      el.addEventListener('pointermove',mv); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
+    });
+    // 크기조절
+    q(el,'.wdg-resize').addEventListener('pointerdown', e=>{
+      if(!editMode) return; e.preventDefault(); e.stopPropagation();
+      const w=wd(); if(!w) return;
+      const step=(GRID.cell+GRID.gap)*scaleNow();
+      const sx=e.clientX, sy=e.clientY, ow=w.w, oh=w.h, mn=WT[w.type].min;
+      const rz=e.currentTarget;
+      try{ rz.setPointerCapture(e.pointerId); }catch(_){}
+      el.classList.add('drag');
+      const mv=ev=>{
+        let nw=clamp(ow+Math.round((ev.clientX-sx)/step),mn.w,GRID.cols-w.x);
+        let nh=clamp(oh+Math.round((ev.clientY-sy)/step),mn.h,Math.max(mn.h,GRID.rows-w.y));
+        if((nw!==w.w||nh!==w.h)&&!occupied(w.x,w.y,nw,nh,w.id)){ w.w=nw; w.h=nh; applyPos(el,w); paintOne(w); }
+      };
+      const up=()=>{ el.classList.remove('drag'); rz.removeEventListener('pointermove',mv); rz.removeEventListener('pointerup',up); rz.removeEventListener('pointercancel',up); save(); };
+      rz.addEventListener('pointermove',mv); rz.addEventListener('pointerup',up); rz.addEventListener('pointercancel',up);
+    });
+  }
+
+  function addWidget(type){
+    const t=WT[type];
+    let slot=findSlot(t.def.w,t.def.h), w=t.def.w, h=t.def.h;
+    // 기본 크기가 안 들어가면 최소 크기(1×1)로라도 자리를 찾는다
+    if(!slot && (t.min.w<t.def.w||t.min.h<t.def.h)){ slot=findSlot(t.min.w,t.min.h); w=t.min.w; h=t.min.h; }
+    if(!slot){ paletteFull(); return false; }   // 그리드가 가득 참 → 추가 거부 + 안내
+    widgets.push({id:uid++, type, x:slot.x, y:slot.y, w, h});
+    save(); renderAll(); layout(); return true;
+  }
+  function paletteFull(){ const n=$('paletteNote'); if(!n) return; n.hidden=false;
+    const g=$('paletteGrid'); if(g){ g.classList.add('wp-shake'); setTimeout(()=>g.classList.remove('wp-shake'),450); } }
+
+  // ---- 모드 전환 ----
+  function updateSeg(){ document.querySelectorAll('#layoutSeg [data-layout]').forEach(b=>{
+    const on=(b.dataset.layout==='widgets')===useWidgets; b.classList.toggle('active',on); b.setAttribute('aria-checked',on?'true':'false'); }); }
+  function openWidgets(){ useWidgets=true; save(); dash.hidden=true; canvas.hidden=false; renderAll(); layout(); updateSeg(); }
+  function closeWidgets(){ if(editMode) exitEdit(); useWidgets=false; save(); canvas.hidden=true; dash.hidden=false; updateSeg(); }
+  function enterEdit(){ if(!useWidgets) openWidgets(); editMode=true; canvas.classList.add('edit'); editBar.hidden=false; const o=$('pnlOvl'); if(o)o.hidden=true; }
+  function exitEdit(){ editMode=false; canvas.classList.remove('edit'); editBar.hidden=true; save(); }
+
+  // ---- 배선 ----
+  document.querySelectorAll('#layoutSeg [data-layout]').forEach(b=>{ b.onclick=()=> b.dataset.layout==='widgets'?openWidgets():closeWidgets(); });
+  const be=$('btnEdit'); if(be) be.onclick=enterEdit;
+  const ed=$('ebDone'); if(ed) ed.onclick=exitEdit;
+  const er=$('ebReset'); if(er) er.onclick=()=>{ widgets=defaults(); save(); renderAll(); layout(); };
+  const ea=$('ebAdd'); if(ea) ea.onclick=()=>{ const n=$('paletteNote'); if(n)n.hidden=true; buildPalette(); $('paletteOvl').hidden=false; };
+  // 격자 밀도(열 개수) 조절
+  function updateGridVal(){ const v=$('ebGridVal'); if(v) v.textContent=userCols; }
+  function setCols(n){ userCols=clamp(n,COLS_MIN,COLS_MAX); try{ localStorage.setItem(KEY_COLS,String(userCols)); }catch(e){} updateGridVal(); layout(); }
+  const gd=$('ebGridDown'); if(gd) gd.onclick=()=> setCols(userCols-1);
+  const gu=$('ebGridUp');   if(gu) gu.onclick=()=> setCols(userCols+1);
+  updateGridVal();
+  const pc=$('paletteClose'); if(pc) pc.onclick=()=> $('paletteOvl').hidden=true;
+  const po=$('paletteOvl'); if(po) po.addEventListener('click', e=>{ if(e.target===po) po.hidden=true; });
+
+  function buildPalette(){
+    const g=$('paletteGrid'); if(!g) return;
+    g.innerHTML=CATS.map(c=>{
+      const items=c.items.filter(type=>WT[type]);
+      if(!items.length) return '';
+      return `<div class="wp-cat"><div class="wp-cat-h">${c.name}</div><div class="wp-cat-items">`+
+        items.map(type=>{ const t=WT[type];
+          return `<button class="wp-item" data-add="${type}">${svg(t.ic)}<span class="wp-n">${t.name}</span><span class="wp-sz">${t.def.w}×${t.def.h}</span></button>`;
+        }).join('')+`</div></div>`;
+    }).join('');
+    g.querySelectorAll('[data-add]').forEach(b=> b.onclick=()=>{ if(addWidget(b.dataset.add)) $('paletteOvl').hidden=true; });
+  }
+
+  window.addEventListener('resize', ()=>{ if(useWidgets) layout(); });
+  if('ResizeObserver' in window){ new ResizeObserver(()=>{ if(useWidgets) layout(); }).observe(canvas); }
+
+  // 외부(8fps 루프)에서 값만 갱신
+  window.pcWidgets={ tick(){ if(useWidgets && !canvas.hidden) paintAll(); } };
+
+  // ---- 초기화 ----
+  load();
+  try{ useWidgets = localStorage.getItem(KEY_ON)==='1'; }catch(e){ useWidgets=false; }
+  updateSeg();
+  if(useWidgets) openWidgets(); else { canvas.hidden=true; dash.hidden=false; }
+})();
+
+// ---------- 설정 패널 (⚙) — 테마·UI 배율은 항상, 디스플레이/모드/종료는 Electron 에서만 ----------
+(function(){
+  const $ = id => document.getElementById(id);
+  const gear=$('pnlGear'), ovl=$('pnlOvl'); if(!gear || !ovl) return;
+  const api = window.panelAPI;
+  gear.hidden = false;   // 설정 버튼은 항상 노출
+
+  // 테마: 라이트 / 다크 / 시스템. data-theme 속성으로 명시 지정, 'system'은 속성을 없애서
+  // OS 설정(@media prefers-color-scheme)을 그대로 따르게 함. index.html 상단의 인라인
+  // 스크립트가 첫 페인트 전에 이미 같은 값을 적용해두므로 깜빡임 없음.
+  const THEME_KEY='pcpanel.theme';
+  function getTheme(){ try{ return localStorage.getItem(THEME_KEY) || 'system'; }catch(e){ return 'system'; } }
+  function applyTheme(t){
+    // 테마 전환 순간 트랜지션을 잠시 끈다: color 등 var() 기반 속성이 '트랜지션 중'이면 크로미움이
+    // 커스텀프로퍼티 변경을 반영 못 해 옛 색이 남는 버그가 있음(예: 사이드바 활성 탭 글자색 고착).
+    const de=document.documentElement;
+    de.classList.add('theme-switching');
+    if(t==='light' || t==='dark') de.setAttribute('data-theme', t);
+    else de.removeAttribute('data-theme');
+    requestAnimationFrame(()=>requestAnimationFrame(()=>de.classList.remove('theme-switching')));
+    try{ localStorage.setItem(THEME_KEY, t); }catch(e){}
+    document.querySelectorAll('#themeSeg [data-theme-choice]').forEach(b=>{
+      const on = b.dataset.themeChoice === t;
+      b.classList.toggle('active', on); b.setAttribute('aria-checked', on?'true':'false');
+    });
+  }
+  document.querySelectorAll('#themeSeg [data-theme-choice]').forEach(b=>{
+    b.onclick = ()=> applyTheme(b.dataset.themeChoice);
+  });
+  applyTheme(getTheme());
+
+  // UI 배율 — --ui-scale 커스텀 프로퍼티로 적용(.app 의 transform:scale 트릭이 실제 확대 담당).
+  // zoom 은 쓰지 않는다: zoom 은 dvh/vh 의 기준 뷰포트까지 같이 줄여서, 배율을 올릴수록
+  // 이 여백 없는 레이아웃의 하단이 화면 밖으로 잘려나가는 문제가 있었음.
+  const FS_KEY='pcpanel.fs';
+  let fs = Math.min(150, Math.max(80, parseInt(localStorage.getItem(FS_KEY)||'100', 10) || 100));
+  document.documentElement.style.zoom = '';   // 이전 버전이 남겨둔 값이 있으면 제거
+  function applyFs(){
+    document.documentElement.style.setProperty('--ui-scale', fs/100);
+    const v=$('fsVal'); if(v) v.textContent = fs;
+    try { localStorage.setItem(FS_KEY, String(fs)); } catch(e){}
+  }
+  applyFs();
+  $('fsDown').onclick = ()=>{ fs=Math.max(80, fs-10); applyFs(); };
+  $('fsUp').onclick   = ()=>{ fs=Math.min(150, fs+10); applyFs(); };
+  $('fsReset').onclick= ()=>{ fs=100; applyFs(); };
+
+  // 디스플레이 목록 그리기 + 키오스크 상태 반영
+  function draw(data){
+    const ds = (data && data.displays) || data || [];
+    const list=$('pnlList'); if(!list) return;
+    list.innerHTML = ds.map(d=>
+      `<button class="pnl-mon${d.current?' cur':''}" data-id="${d.id}">`+
+      `<span>모니터 ${d.index+1}${d.primary?' · 주':''}${d.current?' ✓':''}</span>`+
+      `<span class="res">${d.w}×${d.h}</span></button>`).join('');
+    list.querySelectorAll('.pnl-mon').forEach(b=> b.onclick=()=>{ api.selectDisplay(Number(b.dataset.id)); });
+    const setSw=(id,on)=>{ const sw=$(id); if(sw && typeof on!=='undefined') sw.setAttribute('aria-checked', on?'true':'false'); };
+    if(data){ setSw('pnlKiosk', data.kiosk); setSw('pnlAutoStart', data.openAtLogin); setSw('pnlWaitDisplay', data.waitForDisplay); }
+  }
+
+  // ---- 설정 탭 전환 (좌측 네비 ↔ 우측 패널) ----
+  function setTab(name){
+    document.querySelectorAll('#psetNav .pset-navb').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+    document.querySelectorAll('.pset-panel').forEach(p=>{ p.hidden = p.dataset.panel!==name; });
+    const nav=document.querySelector(`#psetNav .pset-navb[data-tab="${name}"]`), t=$('psetTitle');
+    if(t&&nav) t.textContent=nav.dataset.title;
+  }
+  document.querySelectorAll('#psetNav .pset-navb').forEach(b=> b.onclick=()=> setTab(b.dataset.tab));
+
+  gear.onclick = async ()=>{ setTab('appearance'); ovl.hidden=false; if(api){ try{ draw(await api.getDisplays()); }catch(e){} } };
+  $('pnlClose').onclick = ()=>{ ovl.hidden=true; };
+  ovl.onclick = e=>{ if(e.target===ovl) ovl.hidden=true; };
+  $('pnlReload').onclick = ()=>{ if(api) api.reload(); else location.reload(); };
+
+  if(api){                                   // Electron 전용: 디스플레이 탭 + 종료 버튼 노출
+    $('tabnavDisplay').hidden=false; $('pnlQuit').hidden=false;
+    if(api.onDisplays) api.onDisplays(draw);
+    const flip=el=>el.getAttribute('aria-checked')!=='true';
+    $('pnlKiosk').onclick     = ()=>api.toggleKiosk();
+    $('pnlAutoStart').onclick = ()=>api.setOpenAtLogin(flip($('pnlAutoStart')));
+    $('pnlWaitDisplay').onclick = ()=>api.setWaitForDisplay(flip($('pnlWaitDisplay')));
+    $('pnlQuit').onclick      = ()=>api.quit();
+    // 트레이 '설정 열기' → 설정 창을 디스플레이 탭으로 연다
+    if(api.onOpenSettings) api.onOpenSettings(()=>{ ovl.hidden=false; setTab('display'); if(api.getDisplays) api.getDisplays().then(draw).catch(()=>{}); });
+  }
+})();
+</script>
+</body>
+</html>
