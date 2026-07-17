@@ -608,6 +608,12 @@ try{
     max-height:190px;overflow-y:auto;padding:11px 13px;border-radius:10px;background:var(--surface);border:1px solid var(--line)}
   .upd-dl{width:100%;background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
   .upd-dl:hover{background:var(--accent);color:var(--on-accent);box-shadow:0 5px 16px -5px color-mix(in srgb,var(--accent) 60%,transparent)}
+  .upd-dl:disabled{opacity:.7;cursor:default;box-shadow:none}
+  .upd-prog{height:8px;border-radius:6px;background:var(--track);overflow:hidden}
+  .upd-prog-bar{height:100%;width:0;background:var(--accent);border-radius:6px;transition:width .18s}
+  .upd-msg{font-size:11.5px;line-height:1.5;color:var(--ink-2)}
+  .upd-page{background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;padding:2px 0;align-self:flex-start}
+  .upd-page:hover{color:var(--ink);text-decoration:underline}
   /* 기어 버튼 업데이트 알림 점 */
   .pnl-gear.has-update::after{content:"";position:absolute;top:-3px;right:-3px;width:12px;height:12px;border-radius:50%;
     background:var(--accent);border:2px solid var(--plane)}
@@ -1052,7 +1058,10 @@ try{
                   <button class="pnl-b upd-check" id="updCheck">업데이트 확인</button>
                 </div>
                 <div class="upd-notes" id="updNotes" hidden></div>
-                <button class="pnl-b upd-dl" id="updDownload" hidden>다운로드 페이지 열기</button>
+                <div class="upd-prog" id="updProg" hidden><div class="upd-prog-bar" id="updProgBar"></div></div>
+                <button class="pnl-b upd-dl" id="updDownload" hidden>다운로드 후 설치</button>
+                <div class="upd-msg" id="updMsg" hidden></div>
+                <button class="upd-page" id="updPage" hidden>릴리즈 페이지에서 직접 받기</button>
               </div>
             </div>
             <div class="pset-field">
@@ -2079,33 +2088,54 @@ setInterval(()=>{ render(); tickClock(); if(window.pcWidgets) window.pcWidgets.t
 
   // ---- 업데이트 (일반 탭) — Electron 에서만 동작 ----
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  let _updInfo=null;
+  let _updInfo=null, _downloading=false;
   function renderUpdate(info){
-    if(!info) return; _updInfo=info;
-    const card=$('updCard'), st=$('updStatus'), dl=$('updDownload'), notes=$('updNotes');
+    if(!info || _downloading) return; _updInfo=info;   // 다운로드 중엔 push 로 UI 를 덮지 않음
+    const card=$('updCard'), st=$('updStatus'), dl=$('updDownload'), notes=$('updNotes'),
+          page=$('updPage'), prog=$('updProg'), msg=$('updMsg');
     if(info.current) $('updCur').textContent='v'+info.current;
     card.classList.remove('has-update','err'); st.classList.remove('checking');
-    if(!info.ok){
-      st.textContent='확인 실패 — 네트워크를 확인하세요'; card.classList.add('err');
-      dl.hidden=true; notes.hidden=true; gear.classList.remove('has-update'); return;
-    }
-    if(info.hasUpdate){
+    prog.hidden=true; msg.hidden=true;                 // 렌더 시 진행/메시지 초기화(다운로드 중이면 이 경로 안 탐)
+    if(info.ok && info.hasUpdate){
       st.innerHTML='<span class="upd-dot"></span>새 버전 <b>v'+esc(info.latest)+'</b> 있음';
-      card.classList.add('has-update'); dl.hidden=false; gear.classList.add('has-update');
+      card.classList.add('has-update'); gear.classList.add('has-update');
       if(info.notes){ notes.textContent=info.notes; notes.hidden=false; } else notes.hidden=true;
-    } else if(info.latest){
-      st.textContent='최신 버전입니다'; dl.hidden=true; notes.hidden=true; gear.classList.remove('has-update');
-    } else {
-      st.textContent='게시된 릴리즈가 없습니다'; dl.hidden=true; notes.hidden=true; gear.classList.remove('has-update');
+      if(info.kind==='dev'){ dl.hidden=true; }         // 개발 실행은 자가 설치 불가 → 페이지 링크만
+      else { dl.hidden=false; dl.disabled=false; dl.textContent = info.kind==='portable' ? '새 버전 다운로드' : '다운로드 후 설치'; }
+      page.hidden=false;
+      return;
     }
+    dl.hidden=true; notes.hidden=true; page.hidden=true; gear.classList.remove('has-update');
+    if(!info.ok){ st.textContent='확인 실패 — 네트워크를 확인하세요'; card.classList.add('err'); }
+    else if(info.latest){ st.textContent='최신 버전입니다'; }
+    else { st.textContent='게시된 릴리즈가 없습니다'; }
   }
   async function doCheck(){
-    if(!api||!api.checkUpdate) return;
+    if(!api||!api.checkUpdate||_downloading) return;   // 다운로드 중 확인 금지(진행 UI 보존)
     const st=$('updStatus'), btn=$('updCheck');
     st.textContent='확인 중…'; st.classList.add('checking'); btn.disabled=true;
     try{ renderUpdate(await api.checkUpdate()); }
     catch(e){ renderUpdate({ok:false, error:String(e)}); }
     btn.disabled=false;
+  }
+  async function doDownload(){
+    if(!api||!api.downloadUpdate||!_updInfo||_downloading) return;
+    _downloading=true;                                 // 이 사이 push/재확인이 UI 를 못 건드리게 잠금
+    const dl=$('updDownload'), prog=$('updProg'), bar=$('updProgBar'), msg=$('updMsg'), page=$('updPage');
+    dl.disabled=true; dl.textContent='다운로드 중…'; bar.style.width='0%'; prog.hidden=false; msg.hidden=true; page.hidden=false;
+    let r; try{ r=await api.downloadUpdate(); }catch(e){ r={ok:false, error:String(e)}; }
+    prog.hidden=true;
+    if(!r||!r.ok){
+      msg.textContent='다운로드 실패 — 아래 링크로 직접 받아 주세요.'+(r&&r.error?' ('+r.error+')':'');
+      msg.hidden=false; dl.disabled=false; dl.textContent='다시 시도'; _downloading=false; return;
+    }
+    if(r.kind==='portable'){
+      msg.textContent='다운로드 완료 — 열린 폴더에서 새 버전을 실행하고 기존 파일을 교체하세요.';
+      msg.hidden=false; dl.hidden=true; _downloading=false;
+    } else {   // installed — 곧 앱이 종료되므로 잠금 유지(그 사이 push 가 버튼을 되살리지 못하게)
+      msg.textContent='설치 프로그램을 실행합니다. 곧 앱이 종료됩니다. (서명 없는 빌드라 SmartScreen 경고가 뜨면 “추가 정보 → 실행”)';
+      msg.hidden=false; dl.disabled=true; dl.textContent='설치 시작됨';
+    }
   }
 
   if(api){                                   // Electron 전용: 디스플레이 탭 + 종료 버튼 노출
@@ -2113,8 +2143,14 @@ setInterval(()=>{ render(); tickClock(); if(window.pcWidgets) window.pcWidgets.t
     $('pnlUpdateField').hidden=false;        // 업데이트 UI 는 Electron 에서만
     if(api.onDisplays) api.onDisplays(draw);
     if(api.onUpdate) api.onUpdate(renderUpdate);   // 시작 시 자동 확인 결과 수신
+    if(api.onUpdateProgress) api.onUpdateProgress(p=>{
+      const bar=$('updProgBar'), dl=$('updDownload');
+      if(bar) bar.style.width=(p.pct||0)+'%';
+      if(dl && !dl.hidden) dl.textContent='다운로드 중… '+(p.pct||0)+'%';
+    });
     $('updCheck').onclick   = ()=>doCheck();
-    $('updDownload').onclick= ()=>api.openReleases(_updInfo && _updInfo.url);
+    $('updDownload').onclick= ()=>doDownload();
+    $('updPage').onclick    = ()=>api.openReleases(_updInfo && _updInfo.url);
     const flip=el=>el.getAttribute('aria-checked')!=='true';
     $('pnlKiosk').onclick     = ()=>api.toggleKiosk();
     $('pnlAutoStart').onclick = ()=>api.setOpenAtLogin(flip($('pnlAutoStart')));

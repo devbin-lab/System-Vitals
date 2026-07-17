@@ -317,8 +317,19 @@ function createWindow() {
 }
 
 // ---------- 업데이트 확인 (GitHub 최신 릴리즈) ----------
-// 서명 없는 포터블/설치본이라 조용한 자동설치(electron-updater)는 신뢰성이 없다.
-// 대신 '새 버전이 있는지'만 확인해 알리고, 다운로드는 릴리즈 페이지를 브라우저로 열어 맡긴다.
+// 새 버전이 있으면 앱 안에서 알맞은 릴리즈 자산을 받아, 설치본은 설치 프로그램을 자동 실행하고
+// 포터블은 받은 파일 폴더를 연다. (서명 없는 빌드라 SmartScreen 경고 1회는 불가피)
+function installKind() {                                        // 실행 형태 판별
+  if (!app.isPackaged) return 'dev';                           // 개발 실행(electron .) — 자가 교체 불가
+  if (process.env.PORTABLE_EXECUTABLE_FILE) return 'portable'; // electron-builder 포터블이 설정하는 env
+  return 'installed';                                          // NSIS 설치본
+}
+function pickAsset(assets, kind) {                              // 릴리즈 자산 중 이 실행 형태에 맞는 exe
+  const exes = (assets || []).filter(a => /\.exe$/i.test(a.name || ''));
+  return kind === 'portable'
+    ? (exes.find(a => !/setup/i.test(a.name)) || null)         // 포터블: 'Setup' 아닌 exe
+    : (exes.find(a => /setup/i.test(a.name)) || null);         // 설치본: 'Setup' exe
+}
 function parseVer(s) {                                          // 'v1.2.3'/'1.2'/'v2' → [maj,min,patch] (누락은 0)
   const m = String(s || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
   return m ? [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)] : null;
@@ -360,10 +371,65 @@ async function checkForUpdate() {
       name: rel.name || rel.tag_name,
       notes: String(rel.body || '').slice(0, 4000),
       publishedAt: rel.published_at || null,
+      kind: installKind(),                                     // 렌더러가 버튼 문구/동작을 정하도록
+      assets: (rel.assets || []).map(a => ({ name: a.name, url: a.browser_download_url, size: a.size })),
     };
   } catch (e) {
     return { ok: false, current, error: String((e && e.message) || e), url: RELEASES_PAGE };
   }
+}
+// 릴리즈 자산을 스트리밍 다운로드(리다이렉트 추적, 진행률 콜백). github 계열 호스트만 허용.
+function downloadFile(url, destPath, onProgress, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject(new Error('too many redirects'));
+    let u; try { u = new URL(url); } catch (e) { return reject(new Error('bad url')); }
+    if (u.protocol !== 'https:' || !/(^|\.)github(usercontent)?\.com$/i.test(u.hostname))
+      return reject(new Error('untrusted host'));
+    const req = https.get(url, { headers: { 'User-Agent': 'System-Vitals-Updater' } }, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();                                          // github 자산 URL → codeload/objects 로 302
+        return resolve(downloadFile(res.headers.location, destPath, onProgress, redirects + 1));
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      const total = Number(res.headers['content-length']) || 0;
+      let received = 0;
+      const out = fs.createWriteStream(destPath);
+      res.on('data', d => { received += d.length; if (onProgress) onProgress(received, total); });
+      res.on('error', e => { out.destroy(); reject(e); });
+      out.on('error', e => { req.destroy(); reject(e); });
+      out.on('finish', () => out.close(() => resolve({ path: destPath, size: received })));
+      res.pipe(out);
+    });
+    req.on('error', reject);
+    req.setTimeout(60000, () => req.destroy(new Error('timeout')));
+  });
+}
+// 새 버전 자산을 받아 설치 실행(설치본) / 폴더 열기(포터블). 진행률은 panel:updateProgress 로 통지.
+async function downloadAndInstall() {
+  const kind = installKind();
+  if (kind === 'dev') { shell.openExternal(RELEASES_PAGE); return { ok: true, kind, opened: 'page' }; }
+  const asset = lastUpdate && pickAsset(lastUpdate.assets, kind);
+  if (!asset || !asset.url) return { ok: false, kind, error: '맞는 설치 파일을 찾지 못했습니다' };
+  // 자산명 방어: basename 으로 경로 구분자 제거 + 허용 문자/확장자 검사 + temp 봉쇄 확인
+  // (받은 파일을 실행까지 하므로 다중 방어. 정상 자산명 예: 'System.Vitals.Setup.1.0.3.exe')
+  const safeName = path.basename(String(asset.name || ''));
+  const tempDir = app.getPath('temp');
+  const dest = path.join(tempDir, safeName);
+  if (!/^[\w.\- ]+\.exe$/i.test(safeName) || !dest.startsWith(tempDir + path.sep))
+    return { ok: false, kind, error: '설치 파일 이름이 올바르지 않습니다' };
+  try {
+    await downloadFile(asset.url, dest, (received, total) => {
+      if (win && !win.isDestroyed())
+        win.webContents.send('panel:updateProgress', { received, total, pct: total ? Math.round(received / total * 100) : 0 });
+    });
+  } catch (e) { return { ok: false, kind, error: String((e && e.message) || e) }; }
+  if (kind === 'portable') { shell.showItemInFolder(dest); return { ok: true, kind, path: dest }; }
+  try {                                                        // 설치본: 설치 프로그램 실행 후 앱 종료(파일 잠금 해제)
+    const child = spawn(dest, [], { detached: true, stdio: 'ignore' });
+    child.unref();
+  } catch (e) { return { ok: false, kind, error: '설치 프로그램 실행 실패: ' + String((e && e.message) || e) }; }
+  setTimeout(() => hardQuit(), 1500);                          // 설치 마법사가 뜰 시간을 준 뒤 종료
+  return { ok: true, kind, path: dest };
 }
 let lastUpdate = null;                                          // 마지막 확인 결과(대시보드 로드 완료 시 재전송용)
 async function checkForUpdateCached() { lastUpdate = await checkForUpdate(); return lastUpdate; }
@@ -372,6 +438,7 @@ function pushUpdate(info) { if (win && !win.isDestroyed()) win.webContents.send(
 // ---------- IPC (렌더러 → 메인) ----------
 ipcMain.handle('panel:getDisplays', () => displayPayload());
 ipcMain.handle('panel:checkUpdate', () => checkForUpdateCached());
+ipcMain.handle('panel:downloadUpdate', () => downloadAndInstall());
 ipcMain.on('panel:openReleases', (_e, url) => {                 // 우리 리포의 github 링크만 연다(방어적)
   const u = String(url || RELEASES_PAGE);
   shell.openExternal(u.startsWith(`https://github.com/${REPO}/`) ? u : RELEASES_PAGE);

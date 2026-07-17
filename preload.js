@@ -10,8 +10,10 @@ contextBridge.exposeInMainWorld('panelAPI', {
   reload:        () => ipcRenderer.send('panel:reload'),
   quit:          () => ipcRenderer.send('panel:quit'),
   checkUpdate:   () => ipcRenderer.invoke('panel:checkUpdate'),
+  downloadUpdate:() => ipcRenderer.invoke('panel:downloadUpdate'),
   openReleases:  (url) => ipcRenderer.send('panel:openReleases', url),
   onDisplays:    (cb) => ipcRenderer.on('panel:displays', (_e, data) => cb(data)),
   onOpenSettings:(cb) => ipcRenderer.on('panel:openSettings', () => cb()),
   onUpdate:      (cb) => ipcRenderer.on('panel:update', (_e, info) => cb(info)),
+  onUpdateProgress:(cb) => ipcRenderer.on('panel:updateProgress', (_e, p) => cb(p)),
 });
