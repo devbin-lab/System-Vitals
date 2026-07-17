@@ -5,10 +5,13 @@ const { app, BrowserWindow, screen, ipcMain, Menu, shell, Tray, nativeImage } = 
 const { spawn, exec } = require('child_process');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 
 const PORT = 8788;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
+const REPO = 'devbin-lab/System-Vitals';                       // 업데이트 확인 대상
+const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 
 // ---------- RAM 최적화 ----------
 // 이 대시보드는 텍스트·작은 SVG·CSS 트랜지션뿐이라 GPU 하드웨어 가속의 이득이 거의 없는데,
@@ -99,7 +102,7 @@ function hardQuit() {
   killCollector();
   app.exit(0);
 }
-function toggleKiosk() { cfg.kiosk = !cfg.kiosk; saveCfg(); if (win) win.setKiosk(cfg.kiosk); pushDisplays(); }
+function toggleKiosk() { cfg.kiosk = !cfg.kiosk; saveCfg(); if (win) win.setKiosk(cfg.kiosk); hideFromTaskbar(); pushDisplays(); }
 
 function waitForCollector(cb, tries = 0) {
   const again = () => { if (tries > 80) return cb(false); setTimeout(() => waitForCollector(cb, tries + 1), 300); };
@@ -139,6 +142,9 @@ function targetDisplay() {
   catch (e) { return screen.getPrimaryDisplay(); }
 }
 
+// Windows 는 show/전체화면 전환 때 작업표시줄 버튼이 되살아나는 일이 있어 표시 직후마다 재적용한다.
+function hideFromTaskbar() { if (win && !win.isDestroyed()) win.setSkipTaskbar(true); }
+
 function applyDisplay(d) {
   if (!win || win.isDestroyed()) return;
   if (!d) { if (win.isVisible()) win.hide(); pushDisplays(); return; }  // 고른 모니터 부재 → 숨김(타 화면 침범 방지)
@@ -154,6 +160,7 @@ function applyDisplay(d) {
   }
   if (cfg.kiosk && !win.isKiosk()) win.setKiosk(true);
   if (!cfg.kiosk && win.isKiosk()) win.setKiosk(false);
+  hideFromTaskbar();
   pushDisplays();
 }
 
@@ -192,6 +199,7 @@ function showOnTarget() {
   win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
   win.show(); win.setFullScreen(true);
   if (cfg.kiosk) win.setKiosk(true);
+  hideFromTaskbar();
   win.focus(); pushDisplays();
 }
 function setOpenAtLogin(v) {
@@ -265,8 +273,9 @@ function createWindow() {
   const startBounds = (d || screen.getPrimaryDisplay()).bounds;
   win = new BrowserWindow({
     x: startBounds.x, y: startBounds.y, width: startBounds.width, height: startBounds.height,
-    frame: false, show: false, backgroundColor: '#0a0b0e', autoHideMenuBar: true, skipTaskbar: false,
-    icon: ICON,   // 작업표시줄 아이콘(개발). 패키징은 build.win.icon 이 담당
+    frame: false, show: false, backgroundColor: '#0a0b0e', autoHideMenuBar: true,
+    skipTaskbar: true,   // 작업표시줄에 버튼을 만들지 않는다 — 제어는 트레이 아이콘으로
+    icon: ICON,   // Alt+Tab 아이콘(개발). 패키징은 build.win.icon 이 담당
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
@@ -286,14 +295,77 @@ function createWindow() {
   // applyDisplay 가 show/hide 를 판단한다: 지정 모니터가 있으면 그 화면에 표시,
   // '연결 시에만 표시' + 지정 모니터 부재면 숨긴 채 트레이에서 대기(깜빡임 없음).
   win.once('ready-to-show', () => applyDisplay(targetDisplay()));
-  win.webContents.on('did-finish-load', pushDisplays);
+  // 대시보드 로드 완료 때마다 현재 상태를 밀어 넣는다. 시작 자동확인이 이 페이지 로드보다
+  // 먼저 끝났어도(수집기 부팅 지연) 캐시된 업데이트 결과를 여기서 재전송해 배지 유실을 막는다.
+  win.webContents.on('did-finish-load', () => { pushDisplays(); if (lastUpdate) pushUpdate(lastUpdate); });
+  // OS 차원의 표시/복원(Win+D 후 Alt+Tab 등)은 코드 경로를 안 타므로 창 이벤트에서도 재적용
+  win.on('show', hideFromTaskbar);
+  win.on('restore', hideFromTaskbar);
   win.on('closed', () => { win = null; });
 
   waitForCollector(loadDashboardOrError);
 }
 
+// ---------- 업데이트 확인 (GitHub 최신 릴리즈) ----------
+// 서명 없는 포터블/설치본이라 조용한 자동설치(electron-updater)는 신뢰성이 없다.
+// 대신 '새 버전이 있는지'만 확인해 알리고, 다운로드는 릴리즈 페이지를 브라우저로 열어 맡긴다.
+function parseVer(s) {                                          // 'v1.2.3'/'1.2'/'v2' → [maj,min,patch] (누락은 0)
+  const m = String(s || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return m ? [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)] : null;
+}
+function cmpVer(a, b) {                                         // a>b:1  a<b:-1  같음/판정불가:0
+  const pa = parseVer(a), pb = parseVer(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] > pb[i] ? 1 : -1;
+  return 0;
+}
+function fetchLatestRelease() {
+  return new Promise((resolve, reject) => {
+    const req = https.get({
+      host: 'api.github.com', path: `/repos/${REPO}/releases/latest`,
+      headers: { 'User-Agent': 'System-Vitals-Updater', 'Accept': 'application/vnd.github+json' },
+      timeout: 8000,
+    }, res => {
+      if (res.statusCode === 404) { res.resume(); return resolve(null); }         // 게시된 릴리즈 없음
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', d => { body += d; if (body.length > 1e6) req.destroy(new Error('too large')); });
+      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));   // 에러로 destroy 해야 reject 됨
+  });
+}
+async function checkForUpdate() {
+  const current = app.getVersion();
+  try {
+    const rel = await fetchLatestRelease();
+    if (!rel || !rel.tag_name)                                   // 릴리즈 미게시 → '최신 아님'이 아니라 '릴리즈 없음'
+      return { ok: true, current, latest: null, hasUpdate: false, url: RELEASES_PAGE };
+    const latest = String(rel.tag_name).replace(/^v/i, '');
+    return {
+      ok: true, current, latest, hasUpdate: cmpVer(latest, current) > 0,
+      url: rel.html_url || RELEASES_PAGE,
+      name: rel.name || rel.tag_name,
+      notes: String(rel.body || '').slice(0, 4000),
+      publishedAt: rel.published_at || null,
+    };
+  } catch (e) {
+    return { ok: false, current, error: String((e && e.message) || e), url: RELEASES_PAGE };
+  }
+}
+let lastUpdate = null;                                          // 마지막 확인 결과(대시보드 로드 완료 시 재전송용)
+async function checkForUpdateCached() { lastUpdate = await checkForUpdate(); return lastUpdate; }
+function pushUpdate(info) { if (win && !win.isDestroyed()) win.webContents.send('panel:update', info); }
+
 // ---------- IPC (렌더러 → 메인) ----------
 ipcMain.handle('panel:getDisplays', () => displayPayload());
+ipcMain.handle('panel:checkUpdate', () => checkForUpdateCached());
+ipcMain.on('panel:openReleases', (_e, url) => {                 // 우리 리포의 github 링크만 연다(방어적)
+  const u = String(url || RELEASES_PAGE);
+  shell.openExternal(u.startsWith(`https://github.com/${REPO}/`) ? u : RELEASES_PAGE);
+});
 ipcMain.on('panel:selectDisplay', (_e, id) => { if (Number.isInteger(id)) switchToDisplay(id); });
 ipcMain.on('panel:toggleKiosk', () => toggleKiosk());
 ipcMain.on('panel:setOpenAtLogin', (_e, v) => setOpenAtLogin(v));
@@ -305,7 +377,7 @@ ipcMain.on('panel:quit', () => hardQuit());
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); hideFromTaskbar(); win.focus(); } });
 
   app.whenReady().then(() => {
     loadCfg();
@@ -321,6 +393,10 @@ if (!app.requestSingleInstanceLock()) {
     screen.on('display-added', replace);
     screen.on('display-removed', replace);
     screen.on('display-metrics-changed', replace);
+
+    // 시작 후 한 번 조용히 업데이트 확인 → 있으면 렌더러에 알림(설정 일반 탭 + 기어 배지).
+    // 결과는 lastUpdate 에 캐시되어, 대시보드가 이 시점보다 늦게 로드돼도 did-finish-load 에서 재전송된다.
+    setTimeout(() => { checkForUpdateCached().then(info => { if (info) pushUpdate(info); }).catch(() => {}); }, 6000);
   });
 
   app.on('will-quit', () => { quitting = true; killCollector(); });

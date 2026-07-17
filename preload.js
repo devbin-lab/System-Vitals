@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('panelAPI', {
   setWaitForDisplay: (v) => ipcRenderer.send('panel:setWaitForDisplay', v),
   reload:        () => ipcRenderer.send('panel:reload'),
   quit:          () => ipcRenderer.send('panel:quit'),
+  checkUpdate:   () => ipcRenderer.invoke('panel:checkUpdate'),
+  openReleases:  (url) => ipcRenderer.send('panel:openReleases', url),
   onDisplays:    (cb) => ipcRenderer.on('panel:displays', (_e, data) => cb(data)),
   onOpenSettings:(cb) => ipcRenderer.on('panel:openSettings', () => cb()),
+  onUpdate:      (cb) => ipcRenderer.on('panel:update', (_e, info) => cb(info)),
 });
