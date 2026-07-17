@@ -1,6 +1,6 @@
 {
   "name": "system-vitals",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "System Vitals — PC 하드웨어 실시간 모니터링 서브모니터 패널 (Electron)",
   "main": "main.js",
   "author": "pc-monitor",

@@ -102,7 +102,7 @@ function hardQuit() {
   killCollector();
   app.exit(0);
 }
-function toggleKiosk() { cfg.kiosk = !cfg.kiosk; saveCfg(); if (win) win.setKiosk(cfg.kiosk); hideFromTaskbar(); pushDisplays(); }
+function toggleKiosk() { cfg.kiosk = !cfg.kiosk; saveCfg(); applyFullscreenLock(); hideFromTaskbar(); pushDisplays(); }
 
 function waitForCollector(cb, tries = 0) {
   const again = () => { if (tries > 80) return cb(false); setTimeout(() => waitForCollector(cb, tries + 1), 300); };
@@ -145,6 +145,15 @@ function targetDisplay() {
 // Windows 는 show/전체화면 전환 때 작업표시줄 버튼이 되살아나는 일이 있어 표시 직후마다 재적용한다.
 function hideFromTaskbar() { if (win && !win.isDestroyed()) win.setSkipTaskbar(true); }
 
+// 전체화면 고정: 창을 작업표시줄 '바'보다 위(z-order)로 올려 직접 덮는다.
+// skipTaskbar(툴윈도우 스타일) 창은 셸이 '전체화면 앱'으로 인식하지 않아 작업표시줄을 자동으로
+// 숨기지 않는다 → always-on-top(스크린세이버 레벨: 작업표시줄보다 위)로 덮어야 한다.
+// (cfg.kiosk = 전체화면 on/off. 내부 키/IPC 이름은 호환 위해 유지)
+function applyFullscreenLock() {
+  if (!win || win.isDestroyed()) return;
+  win.setAlwaysOnTop(!!cfg.kiosk, 'screen-saver');
+}
+
 function applyDisplay(d) {
   if (!win || win.isDestroyed()) return;
   if (!d) { if (win.isVisible()) win.hide(); pushDisplays(); return; }  // 고른 모니터 부재 → 숨김(타 화면 침범 방지)
@@ -158,8 +167,7 @@ function applyDisplay(d) {
     win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
     win.setFullScreen(true);
   }
-  if (cfg.kiosk && !win.isKiosk()) win.setKiosk(true);
-  if (!cfg.kiosk && win.isKiosk()) win.setKiosk(false);
+  applyFullscreenLock();
   hideFromTaskbar();
   pushDisplays();
 }
@@ -198,7 +206,7 @@ function showOnTarget() {
   if (win.isFullScreen()) win.setFullScreen(false);
   win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
   win.show(); win.setFullScreen(true);
-  if (cfg.kiosk) win.setKiosk(true);
+  applyFullscreenLock();
   hideFromTaskbar();
   win.focus(); pushDisplays();
 }
@@ -298,9 +306,11 @@ function createWindow() {
   // 대시보드 로드 완료 때마다 현재 상태를 밀어 넣는다. 시작 자동확인이 이 페이지 로드보다
   // 먼저 끝났어도(수집기 부팅 지연) 캐시된 업데이트 결과를 여기서 재전송해 배지 유실을 막는다.
   win.webContents.on('did-finish-load', () => { pushDisplays(); if (lastUpdate) pushUpdate(lastUpdate); });
-  // OS 차원의 표시/복원(Win+D 후 Alt+Tab 등)은 코드 경로를 안 타므로 창 이벤트에서도 재적용
-  win.on('show', hideFromTaskbar);
-  win.on('restore', hideFromTaskbar);
+  // OS 차원의 표시/복원(Win+D 후 Alt+Tab 등)은 코드 경로를 안 타므로 창 이벤트에서도 재적용:
+  // 작업표시줄 버튼 숨김 + 전체화면일 때 작업표시줄 '바' 덮기(always-on-top) 둘 다 다시 건다.
+  const reassert = () => { hideFromTaskbar(); applyFullscreenLock(); };
+  win.on('show', reassert);
+  win.on('restore', reassert);
   win.on('closed', () => { win = null; });
 
   waitForCollector(loadDashboardOrError);

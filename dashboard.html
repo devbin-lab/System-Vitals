@@ -621,7 +621,7 @@ try{
   .pnl-mon .res{font-family:var(--mono);color:var(--ink-3);font-size:12px}
   .pnl-mon.cur .res{color:var(--ink-2)}
 
-  /* 키오스크 토글 */
+  /* 전체화면 토글 */
   .pnl-row2{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;color:var(--ink);padding:3px 1px}
   .pnl-sw{width:48px;height:28px;border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2);position:relative;cursor:pointer;flex:0 0 auto;transition:.2s;padding:0}
   .pnl-sw i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:var(--ink-3);transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
@@ -1027,7 +1027,7 @@ try{
               <div class="pnl-list" id="pnlList"></div>
             </div>
             <div class="pset-row">
-              <div class="pset-flabel"><b>키오스크 잠금</b><span>전체화면으로 고정</span></div>
+              <div class="pset-flabel"><b>전체화면</b><span>작업표시줄까지 덮어 이 모니터에 고정</span></div>
               <button class="pnl-sw" id="pnlKiosk" role="switch" aria-checked="false"><i></i></button>
             </div>
             <div class="pset-row">
@@ -2050,7 +2050,7 @@ setInterval(()=>{ render(); tickClock(); if(window.pcWidgets) window.pcWidgets.t
   $('fsUp').onclick   = ()=>{ fs=Math.min(150, fs+10); applyFs(); };
   $('fsReset').onclick= ()=>{ fs=100; applyFs(); };
 
-  // 디스플레이 목록 그리기 + 키오스크 상태 반영
+  // 디스플레이 목록 그리기 + 전체화면 토글 상태 반영
   function draw(data){
     const ds = (data && data.displays) || data || [];
     const list=$('pnlList'); if(!list) return;
